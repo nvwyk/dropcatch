@@ -1,0 +1,38 @@
+# /etc/systemd/system/dropcatch.service
+# Install: npm ci && npm run build in /opt/dropcatch, create a `dropcatch` user,
+# put secrets in /etc/dropcatch/env (chmod 600, owner root), then:
+#   systemctl daemon-reload && systemctl enable --now dropcatch
+[Unit]
+Description=dropcatch domain drop watcher
+After=network-online.target time-sync.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dropcatch
+Group=dropcatch
+WorkingDirectory=/opt/dropcatch
+EnvironmentFile=/etc/dropcatch/env
+Environment=NODE_ENV=production
+Environment=DROPCATCH_CONFIG=/etc/dropcatch/config.yaml
+# Headless: `watch`. All-in-one: `dashboard --watch` (stays on 127.0.0.1 unless configured).
+ExecStart=/usr/bin/node /opt/dropcatch/dist/index.js watch
+Restart=on-failure
+RestartSec=5
+# SIGTERM lets an in-flight registration finish before exit.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/dropcatch/data /etc/dropcatch
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

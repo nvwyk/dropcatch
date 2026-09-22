@@ -1,0 +1,14 @@
+# Secrets come from .env (never baked into the image). The config is mounted writable so the
+# dashboard can edit it. Set app.database: /data/dropcatch.sqlite in it so state lives in the volume.
+services:
+  dropcatch:
+    build: .
+    image: dropcatch:latest
+    restart: unless-stopped
+    env_file: .env
+    command: ["dashboard", "--host", "0.0.0.0", "--watch"]
+    ports:
+      - "127.0.0.1:4747:4747"   # published on localhost only; use a reverse proxy with HTTPS to expose it
+    volumes:
+      - ./data:/data
+      - ./config.yaml:/config/config.yaml

@@ -1,0 +1,151 @@
+# dropcatch example configuration
+#
+# Copy to ./config.yaml and edit, or run `dropcatch init` / `dropcatch dashboard` for a guided setup.
+# Secrets NEVER go in this file. Every credential below is the NAME of an environment variable
+# (put the values in .env, see .env.example). The loader refuses files that contain secrets.
+
+# development: always dry run, mock providers allowed
+# testing:     only sandbox or mock accounts
+# production:  real accounts, mock providers refused
+profile: production
+
+app:
+  timezone: Europe/Warsaw          # used for display and for drop times written without an offset
+  database: ./data/dropcatch.sqlite  # audit trail + purchase lock. ":memory:" = stateless (no live auto-buy)
+  logLevel: info                   # trace | debug | info | warn | error
+  logFormat: pretty                # pretty | json
+  dryRun: true                     # nothing is ever purchased until you set this to false
+
+policy:
+  respectProviderLimits: true      # enforce each provider's documented rate limits
+  maxConcurrentRequests: 4         # across all targets
+  allowRetries: true
+
+# Built-in registry source. NASK (.pl) is known; other TLDs come from the IANA bootstrap.
+rdap:
+  enabled: true
+  bootstrap: true
+  # servers:
+  #   de: https://rdap.denic.de/
+  # limits:
+  #   minIntervalMs: 1000
+
+# Registrar accounts. Several accounts per registrar are fine (e.g. porkbun-main, porkbun-backup).
+accounts:
+  porkbun-main:
+    provider: porkbun
+    environment: production        # sandbox = pk1_sb_ keys (fake money)
+    credentials:
+      apiKey: PORKBUN_API_KEY
+      secretApiKey: PORKBUN_SECRET_API_KEY
+    # options:
+    #   whoisPrivacy: true
+    # limits:
+    #   availability: { minIntervalMs: 1000, requestsPerMinute: 60 }
+
+  cloudflare-main:
+    provider: cloudflare
+    environment: production        # sandbox supports only .com and .net and needs full contacts
+    enabled: false                 # enable once CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are set
+    credentials:
+      apiToken: CLOUDFLARE_API_TOKEN
+      accountId: CLOUDFLARE_ACCOUNT_ID
+
+  # namecheap-main:
+  #   provider: namecheap
+  #   environment: sandbox
+  #   credentials:
+  #     apiUser: NAMECHEAP_API_USER
+  #     apiKey: NAMECHEAP_API_KEY
+  #     userName: NAMECHEAP_USERNAME
+  #     clientIp: NAMECHEAP_CLIENT_IP   # must be whitelisted in your Namecheap API settings
+  #   options:
+  #     contact:                        # required only if this account registers domains
+  #       firstName: Marta
+  #       lastName: Kowalczyk
+  #       address1: ul. Prosta 12
+  #       city: Warszawa
+  #       stateProvince: Mazowieckie
+  #       postalCode: 00-850
+  #       country: PL
+  #       phone: "+48.221234567"
+  #       email: marta@example.pl
+
+# Proxies route traffic (e.g. a whitelisted egress IP). They are not a way around rate limits:
+# every account keeps a single limiter no matter how many proxies it uses.
+proxies:
+  enabled: false
+  # defaultPool: office
+  # pools:
+  #   office:
+  #     strategy: failover            # static | round-robin | random | failover
+  #     proxies:
+  #       - http://10.0.0.5:3128      # credential-free URLs may be written here
+  #       - urlEnv: PROXY_BACKUP_URL  # URLs with user:password must come from the environment
+
+notifications:
+  discord:
+    enabled: true
+    webhookEnv: DISCORD_WEBHOOK_URL
+    username: dropcatch
+    # mentionRoleId: "123456789012345678"   # pinged on detections and purchases only
+    # events: [availability_detected, registration_succeeded, registration_failed, registration_ambiguous]
+
+dashboard:
+  host: 127.0.0.1                  # 0.0.0.0 (or --public) exposes it; put HTTPS in front
+  port: 4747
+  trustProxy: false                # true behind a reverse proxy that sets X-Forwarded-*
+  sessionHours: 168
+
+targets:
+  # A .com drop with auto-buy. Rehearse with app.dryRun: true first.
+  - id: brand-com
+    domain: example-brand.com
+    drop:
+      expectedAt: "2026-10-01T18:00:00Z"   # or "2026-10-01 20:00" + timezone below
+      # timezone: Europe/Warsaw
+      preWindowSeconds: 600                 # warm polling starts 10 minutes early
+      postWindowSeconds: 900                # keep going 15 minutes after the expected time
+    monitoring:
+      strategy: adaptive
+      initialIntervalMs: 30000              # before the window
+      warmupIntervalMs: 1000                # inside the window
+      hotIntervalMs: 250                    # within hotWindowSeconds of the drop (limits still apply)
+      hotWindowSeconds: 10
+      requestTimeoutMs: 2500
+    availability:
+      providers: [rdap, porkbun-main]
+      quorum:
+        mode: any                           # any | majority | registry-confirmed
+        minimumConfirmations: 1
+    registration:
+      enabled: true
+      mode: auto-buy                        # notify-only | confirm | auto-buy
+      providers: [porkbun-main]             # tried in order, next only after a CONFIRMED failure
+      maxAttemptsPerProvider: 1
+      maxTotalAttempts: 1
+      budget:
+        maxRegistrationPrice: 15
+        currency: USD
+        allowPremium: false
+        # expectedPrice: 11.08
+        # requireExactPrice: true
+      onFailure: resume-watch               # resume-watch | stop
+    notifications:
+      discord:
+        enabled: true
+
+  # A .pl name. Porkbun does not sell .pl, so this one only notifies. NASK RDAP lags the
+  # registry by up to 15 minutes; add an API registrar that sells .pl via a plugin for real speed.
+  - id: sklep-pl
+    domain: sklep-przyklad.pl
+    drop:
+      expectedAt: "2026-10-05 10:00"
+      timezone: Europe/Warsaw
+      preWindowSeconds: 900
+      postWindowSeconds: 3600
+    availability:
+      providers: [rdap]
+    registration:
+      enabled: false
+      mode: notify-only

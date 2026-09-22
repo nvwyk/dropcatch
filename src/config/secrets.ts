@@ -14,6 +14,7 @@ const RULES: Rule[] = [
   { name: "bearer token", pattern: /\bbearer\s+[A-Za-z0-9._~+/-]{20,}/i },
   { name: "credentials embedded in a URL", pattern: /[a-z][a-z0-9+.-]*:\/\/[^\s/:@'"]+:[^\s/@'"]+@/i },
   { name: "private key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+  { name: "Telegram bot token", pattern: /\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/ },
   { name: "Cloudflare API token", pattern: /\b(?:apiToken|api_token)\s*[:=]\s*["']?[A-Za-z0-9_-]{35,}/ },
 ];
 

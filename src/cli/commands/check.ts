@@ -2,6 +2,7 @@ import type { ResolvedTarget } from "../../config/loader.ts";
 import { RDAP_ACCOUNT } from "../../config/loader.ts";
 import type { QuorumMode } from "../../config/schema.ts";
 import { aggregate, type AggregateResult } from "../../core/availability/AvailabilityAggregator.ts";
+import { measureClockOffset, type NtpSample } from "../../core/ntp.ts";
 import type { AvailabilityResult } from "../../core/types.ts";
 import { formatMoney } from "../../core/types.ts";
 import { displayDomain, normalizeDomain } from "../../domain/normalize.ts";
@@ -19,6 +20,7 @@ export interface CheckReport {
   quorum: QuorumMode;
   tldNotes: string[];
   clockSkewMs?: number;
+  ntp?: NtpSample;
 }
 
 /** One-shot availability check across sources. Shared by the CLI and the dashboard. */
@@ -44,7 +46,9 @@ export async function runCheck(rt: Runtime, input: string, providers?: string[])
   await Promise.allSettled(usable.map((u) => u.check.prepare?.(domain.ascii)));
   const timeoutMs = target?.requestTimeoutMs ?? 5000;
   const signal = AbortSignal.timeout(timeoutMs * 3);
+  const ntpPromise = rt.config.app.clock.ntp ? measureClockOffset(rt.config.app.clock.servers, { samplesPerServer: 1 }).catch(() => undefined) : Promise.resolve(undefined);
   const results = await Promise.all(usable.map((u) => u.check.check!({ domain: domain.ascii, timeoutMs, signal })));
+  const ntp = await ntpPromise;
   const quorum = target?.availability.quorum ?? "any";
   const agg = aggregate(results, quorum, target?.availability.minimumConfirmations ?? 1, true);
   const skews = results.map((r) => r.clockSkewMs).filter((s): s is number => s !== undefined);
@@ -58,6 +62,7 @@ export async function runCheck(rt: Runtime, input: string, providers?: string[])
     quorum,
     tldNotes: strategyFor(domain).semantics.notes,
     clockSkewMs: skews.length ? Math.round(skews.reduce((a, b) => a + b, 0) / skews.length) : undefined,
+    ntp,
   };
 }
 
@@ -100,7 +105,12 @@ export async function checkCommand(rt: Runtime, input: string, opts: { provider?
   out(bold(`Decision (${report.quorum}):`));
   const label = report.decision === "positive" ? good("POSITIVE") : report.decision === "negative" ? bad("NEGATIVE") : warn("INCONCLUSIVE");
   kv("registrable signal", `${label} ${dim(report.basis)}`);
-  if (report.clockSkewMs !== undefined && Math.abs(report.clockSkewMs) > 1500) {
+  if (report.ntp) {
+    out();
+    const off = report.ntp.offsetMs;
+    const line = `Clock: ${Math.abs(off)} ms ${off > 0 ? "behind" : "ahead of"} NTP time (${report.ntp.server}, rtt ${report.ntp.rttMs} ms)`;
+    out(Math.abs(off) > rt.config.app.clock.warnMs ? warn(`${line}. dropcatch corrects for this while watching; fixing NTP on this machine is better.`) : dim(line));
+  } else if (report.clockSkewMs !== undefined && Math.abs(report.clockSkewMs) > 1500) {
     out();
     out(warn(`Clock: servers report a time about ${(report.clockSkewMs / 1000).toFixed(1)} s away from this machine. Check NTP.`));
   }

@@ -1,6 +1,6 @@
 {
   "name": "dropcatch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Domain drop watcher and safe auto-buyer for Node.js. Adaptive polling around a known release time, multi-provider availability, budget-gated registration, Discord alerts and a full SQLite audit trail.",
   "type": "module",
   "license": "MIT",

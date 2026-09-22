@@ -182,6 +182,7 @@ export function formatDuration(ms: number): string {
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
   const s = totalSeconds % 60;
+  if (h >= 48) return `${sign}${Math.floor(h / 24)}d ${pad(h % 24)}h`;
   if (h > 0) return `${sign}${h}h ${pad(m)}m`;
   return `${sign}${m}m ${pad(s)}s`;
 }

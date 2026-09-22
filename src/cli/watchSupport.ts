@@ -1,5 +1,5 @@
 import type { ResolvedTarget } from "../config/loader.ts";
-import { systemClock, withTimeout } from "../core/clock.ts";
+import { withTimeout } from "../core/clock.ts";
 import { ConfigError } from "../core/errors.ts";
 import type { EventSink } from "../core/events.ts";
 import { DropOrchestrator, type WatchOutcome } from "../core/orchestration/DropOrchestrator.ts";
@@ -45,7 +45,7 @@ export async function prepareWatch(rt: Runtime, target: ResolvedTarget, opts: Pr
     store: opts.store,
     events: opts.events,
     logger: rt.logger.child({ target: target.id }),
-    clock: systemClock,
+    clock: rt.clockSync.clock(),
     dryRun: opts.dryRun,
     timeZone: rt.config.app.timezone,
     confirm: opts.confirm,

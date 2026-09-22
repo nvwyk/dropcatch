@@ -1,7 +1,7 @@
 # Requirements (MoSCoW)
 
 Extracted from [`domain-drop-auto-buyer-plan.md`](../domain-drop-auto-buyer-plan.md) (Step B of the agentic workflow).
-Status column reflects v0.1.0.
+Status column reflects v0.2.0.
 
 Legend: **Done** = implemented and covered by tests. **Partial** = implemented with a documented gap.
 **Deferred** = intentionally not built yet.
@@ -19,14 +19,14 @@ Legend: **Done** = implemented and covered by tests. **Partial** = implemented w
 | M7 | Adaptive polling with idle, warm, hot and post phases, drift-free and aligned to the drop instant | 9, 26 | Done |
 | M8 | Provider abstraction: core never calls a registrar directly | 3, 11, 48 | Done |
 | M9 | Generic RDAP provider with IANA bootstrap and NASK `.pl` endpoint | 12 | Done |
-| M10 | Registrar adapters: Porkbun, Namecheap, Cloudflare (availability + registration) | 13 | Done (Namecheap/Cloudflare need live sandbox verification, see PROVIDERS.md) |
+| M10 | Registrar adapters: OVHcloud, Porkbun, Namecheap, Cloudflare (availability + registration) | 13 | Done (Namecheap/Cloudflare/OVH need live verification with real accounts, see PROVIDERS.md) |
 | M11 | Multi-provider aggregation where timeouts, 429 and errors never count as "unavailable" | 15, 39 | Done |
 | M12 | Modes: notify-only (default), confirm, auto-buy (explicit switch) | 19, 65 | Done |
 | M13 | Dry-run that can never reach a provider's `register()` | 33 | Done |
 | M14 | Purchase gate: domain match, budget, currency, premium, attempts, target enabled, window | 18, 36 | Done |
 | M15 | Duplicate-purchase protection: persisted state machine, write-ahead attempts, CAS lock, attempt caps | 16, 17 | Done |
 | M16 | Ambiguous registration results are a distinct state and block fallback to another registrar | 17, 37 | Done |
-| M17 | Discord webhook notifications, non-blocking, never containing secrets | 20, 21, 57 | Done |
+| M17 | Discord and Telegram notifications, non-blocking, never containing secrets | 20, 21, 57 | Done |
 | M18 | Structured logs (pretty + JSON) with redaction of tokens, webhook URLs and proxy credentials | 35, 40 | Done |
 | M19 | SQLite audit trail: targets, runs, checks, attempts, events | 29, 55 | Done |
 | M20 | Transport layer with timeouts, retry policy and error taxonomy | 23, 24, 53 | Done |
@@ -56,20 +56,24 @@ Legend: **Done** = implemented and covered by tests. **Partial** = implemented w
 
 | # | Requirement | Plan section | Status |
 |---|---|---|---|
-| C1 | Prometheus metrics endpoint | 40 | Deferred (counters kept in memory, stats from SQLite) |
+| C1 | Prometheus metrics endpoint | 40 | Done (`/metrics`, `/healthz`, `watch --metrics-port`) |
 | C2 | Generic HTTP provider with safe templating | 49 | Deferred |
 | C3 | Multi-currency budget conversion | 18 | Deferred (currency mismatch is a hard block) |
-| C4 | Connection pre-warming for registration-only providers | 26 | Deferred |
-| C5 | NTP-grade clock offset measurement | 10 | Deferred |
+| C4 | Connection pre-warming for registration-only providers | 26 | Done |
+| C5 | NTP-grade clock offset measurement | 10 | Done (SNTP, optional correction of scheduling) |
+| C6 | `.pl` registration through an API registrar | 52 | Done (OVHcloud adapter) |
+| C7 | Telegram notifications | 20 | Done |
+| C8 | Bulk import and drop calendar (`.ics`) | 30 | Done |
 
 ## RESEARCH (answered in PROVIDERS.md and ARCHITECTURE.md)
 
 - Real polling limits per provider.
 - Whether RDAP 404 can trigger a purchase (answer: no, and for `.pl` it lags by up to 15 minutes).
-- Which registrars sell the user's TLD (answer: Porkbun does not sell `.pl`; verify others with `dropcatch check`).
+- Which registrars sell the user's TLD (answer: OVHcloud sells `.pl` and `.com.pl`; Porkbun does not).
 - Whether multi-registrar race registration is safe (answer: no parallel purchase; sequential fallback only after a confirmed failure).
 
 ## DEFERRED / NOT BUILDING
 
-Web dashboard, REST API, multi-user SaaS, automatic account creation, CAPTCHA or anti-bot bypass,
+Public REST API for third parties, multi-user SaaS, automatic account creation, CAPTCHA or anti-bot bypass,
 undocumented endpoints, browser automation, proxy rotation to evade limits, unlimited polling (plan section 73).
+The single-user web dashboard (plan section 58) was built on request.

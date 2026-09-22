@@ -64,6 +64,8 @@ export interface ProviderInstance {
   getRegistrationStatus?(domain: string, reference: string | undefined, timeoutMs: number): Promise<RegistrationResult>;
   /** Warm caches (pricing, bootstrap) before the hot window. */
   prepare?(domain: string): Promise<void>;
+  /** Cheap unauthenticated request that keeps a TCP/TLS connection to the API warm. */
+  warmup?(): Promise<void>;
   healthCheck?(timeoutMs: number): Promise<HealthResult>;
 }
 

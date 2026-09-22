@@ -1,5 +1,6 @@
 import type { ResolvedTarget } from "../../config/loader.ts";
 import type { Logger } from "../../logging/logger.ts";
+import { observeCheck } from "../../observability/metrics.ts";
 import type { Store } from "../../persistence/Store.ts";
 import type { RateLimiter } from "../../providers/RateLimiter.ts";
 import { AvailabilityService, type AvailabilitySource } from "../availability/AvailabilityService.ts";
@@ -58,6 +59,7 @@ export class DropOrchestrator {
   private phase?: Phase;
   private readonly lastStatus = new Map<string, string>();
   private readonly lastProblem = new Map<string, { code: string; at: number }>();
+  private readonly lastWarm = new Map<string, number>();
 
   constructor(deps: OrchestratorDeps) {
     this.d = deps;
@@ -142,7 +144,7 @@ export class DropOrchestrator {
       minimumConfirmations: target.availability.minimumConfirmations,
       timeoutMs: target.requestTimeoutMs,
       globalLimiter: this.d.globalLimiter,
-      now: () => clock.now(),
+      // Freshness and rate-limit pauses compare against provider timestamps, which use the system clock.
       onResult: (r) => this.onResult(r),
     });
 
@@ -196,6 +198,7 @@ export class DropOrchestrator {
         availability.reset();
       }
 
+      this.warmRegistrars();
       const wakeAt = nextTickAt(clock.now(), target.schedule);
       await clock.sleep(wakeAt - clock.now(), signal);
       const drift = clock.now() - wakeAt;
@@ -242,10 +245,27 @@ export class DropOrchestrator {
     }
   }
 
+  /**
+   * Keep TLS connections to registration-only providers open near the drop, so the final check
+   * and the purchase do not pay for a fresh handshake. Sources are kept warm by polling anyway.
+   */
+  private warmRegistrars(): void {
+    if (!this.d.target.registration.active || this.phase === "idle" || this.phase === "expired") return;
+    const polled = new Set(this.d.sources.map((s) => s.id));
+    const now = Date.now();
+    for (const c of this.d.candidates) {
+      if (polled.has(c.id) || !c.instance.warmup) continue;
+      if (now - (this.lastWarm.get(c.id) ?? 0) < 15_000) continue;
+      this.lastWarm.set(c.id, now);
+      void c.instance.warmup().catch((err: Error) => this.d.logger.debug(`warmup of ${c.id} failed: ${err.message}`));
+    }
+  }
+
   private onPhase(phase: Phase): void {
     if (phase === this.phase) return;
     const previous = this.phase;
     this.phase = phase;
+    if (phase === "hot") this.lastWarm.clear();
     const { target, logger, timeZone } = this.d;
     const interval = intervalFor(phase, target.schedule);
     if (phase === "warm" && previous !== undefined) this.emit("drop_window_entered", { phase, reason: `polling every ${interval} ms` });
@@ -262,6 +282,7 @@ export class DropOrchestrator {
 
   private onResult(r: AvailabilityResult): void {
     const { store, logger } = this.d;
+    observeCheck(r);
     store.recordCheck(this.runId, r, this.phase);
     const previous = this.lastStatus.get(r.provider);
     this.lastStatus.set(r.provider, r.status);

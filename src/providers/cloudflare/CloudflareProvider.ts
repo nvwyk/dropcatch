@@ -143,6 +143,10 @@ export const cloudflarePlugin = definePlugin<CloudflareOptions>({
     }
 
     return {
+      async warmup() {
+        await ctx.http({ method: "GET", url: `${root}/`, timeoutMs: 3000, label: "cloudflare.warmup" });
+      },
+
       async check(req) {
         const meta = startCall(ctx.accountId, "cloudflare", req.domain, ctx.now());
         try {

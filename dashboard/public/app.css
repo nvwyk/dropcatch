@@ -48,6 +48,8 @@
   --phase-warm: rgb(232 163 61 / 0.28);
   --phase-hot: rgb(239 91 95 / 0.42);
   --phase-post: rgb(61 139 253 / 0.24);
+  /* Chart series colour, validated with the dataviz checker against surface-1 (dark). */
+  --chart-line: #3d8bfd;
 
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -95,6 +97,7 @@
   --phase-warm: rgb(232 163 61 / 0.35);
   --phase-hot: rgb(201 40 45 / 0.35);
   --phase-post: rgb(31 95 207 / 0.22);
+  --chart-line: #1f5fcf;
 }
 
 *,
@@ -324,11 +327,13 @@ h1[tabindex]:focus {
 
 .stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
 }
 
 .stack-sm {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
 }
 
@@ -1081,6 +1086,216 @@ td.truncate {
   overflow-wrap: anywhere;
 }
 
+/* ---------- latency small multiples ---------- */
+
+.spark-row {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+}
+
+.spark-row + .spark-row {
+  border-top: 1px solid var(--hairline);
+}
+
+.spark-meta .name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spark-meta .nums {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.spark {
+  position: relative;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  touch-action: none;
+}
+
+.spark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.spark .line {
+  fill: none;
+  stroke: var(--chart-line);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark .area {
+  fill: var(--chart-line);
+  opacity: 0.1;
+}
+
+.spark .base {
+  stroke: var(--hairline);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.spark .dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--chart-line);
+  box-shadow: 0 0 0 2px var(--surface-1);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.spark .cross {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ink-tertiary);
+  pointer-events: none;
+}
+
+.spark .tip {
+  position: absolute;
+  top: -6px;
+  z-index: 2;
+  transform: translate(-50%, -100%);
+  padding: 4px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.spark .tip strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-note {
+  padding: 0 var(--space-4) var(--space-3);
+}
+
+/* ---------- calendar ---------- */
+
+.cal-scroll {
+  overflow-x: auto;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(96px, 1fr));
+}
+
+.cal-head {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink-subtle);
+  font-size: 12px;
+}
+
+.cal-day {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-height: 96px;
+  padding: 6px;
+  border-right: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  min-width: 0;
+}
+
+.cal-day:nth-child(7n) {
+  border-right: 0;
+}
+
+.cal-day .n {
+  justify-self: start;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-day.other {
+  background: var(--canvas);
+}
+
+.cal-day.other .n {
+  color: var(--ink-tertiary);
+}
+
+.cal-day.today .n {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.cal-chip {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.cal-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-chip time {
+  font-family: var(--font-mono);
+  color: var(--accent-text);
+}
+
+.cal-chip.buy {
+  background: var(--danger-soft);
+}
+
+.cal-chip.buy time {
+  color: var(--danger);
+}
+
+.cal-chip.done {
+  background: var(--success-soft);
+}
+
+.cal-chip.done time {
+  color: var(--success);
+}
+
+.cal-chip:hover {
+  text-decoration: none;
+  box-shadow: inset 0 0 0 1px var(--hairline-strong);
+}
+
+.preview-table {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+}
+
 /* ---------- confirmation ---------- */
 
 .confirm-card {
@@ -1312,6 +1527,11 @@ dialog .panel-body {
 
   .kv {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .spark-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
   }
 
   .kv dd {

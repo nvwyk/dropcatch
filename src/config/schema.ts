@@ -141,6 +141,7 @@ const targetSchema = z
           .object({ enabled: z.boolean().default(true), webhookEnv: envVarName.optional() })
           .strict()
           .prefault({}),
+        telegram: z.object({ enabled: z.boolean().default(true) }).strict().prefault({}),
       })
       .strict()
       .prefault({}),
@@ -159,6 +160,18 @@ export const configSchema = z
         logFormat: z.enum(["pretty", "json"]).default("pretty"),
         /** New configs are dry-run. Going live is a deliberate edit. */
         dryRun: z.boolean().default(true),
+        clock: z
+          .object({
+            /** Measure the system clock against NTP at start and every 15 minutes. */
+            ntp: z.boolean().default(true),
+            servers: z.array(z.string().min(1)).min(1).default(["time.cloudflare.com", "pool.ntp.org", "time.google.com"]),
+            /** Schedule drops on NTP time when the system clock is off. */
+            correct: z.boolean().default(true),
+            warnMs: z.number().int().min(0).default(500),
+            maxCorrectionMs: z.number().int().min(0).default(600_000),
+          })
+          .strict()
+          .prefault({}),
       })
       .strict()
       .prefault({}),
@@ -191,6 +204,17 @@ export const configSchema = z
             webhookEnv: envVarName.default("DISCORD_WEBHOOK_URL"),
             username: z.string().min(1).max(80).default("dropcatch"),
             mentionRoleId: z.string().regex(/^\d+$/, "numeric role id").optional(),
+            events: z.array(z.enum(EVENT_TYPES)).optional(),
+            proxy: z.string().optional(),
+          })
+          .strict()
+          .prefault({}),
+        telegram: z
+          .object({
+            enabled: z.boolean().default(false),
+            botTokenEnv: envVarName.default("TELEGRAM_BOT_TOKEN"),
+            /** Numeric chat id (negative for groups) or @channelusername. Not a secret. */
+            chatId: z.string().regex(/^(-?\d+|@[A-Za-z0-9_]{5,})$/, "numeric chat id or @channelname").optional(),
             events: z.array(z.enum(EVENT_TYPES)).optional(),
             proxy: z.string().optional(),
           })

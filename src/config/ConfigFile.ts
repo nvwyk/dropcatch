@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { isMap, isSeq, parseDocument, type Document } from "yaml";
-import { parseConfigText, resolveConfig } from "../config/loader.ts";
+import { parseConfigText, resolveConfig } from "./loader.ts";
 import { ConfigError } from "../core/errors.ts";
 import { builtinRegistry, loadPluginModule } from "../providers/ProviderRegistry.ts";
 

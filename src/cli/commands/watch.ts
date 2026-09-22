@@ -4,6 +4,8 @@ import type { WatchOutcome } from "../../core/orchestration/DropOrchestrator.ts"
 import { formatDuration, formatInstant } from "../../core/time.ts";
 import { displayDomain } from "../../domain/normalize.ts";
 import { EventPublisher } from "../../notifications/Notifier.ts";
+import { setWatchesRunning } from "../../observability/metrics.ts";
+import { startMetricsServer } from "../../observability/server.ts";
 import { VERSION } from "../../version.ts";
 import { bad, bold, dim, good, kv, out, printJson, warn } from "../output.ts";
 import { isInteractive, terminalConfirm } from "../prompt.ts";
@@ -54,24 +56,46 @@ function printBanner(rt: Runtime, targets: ResolvedTarget[], dryRun: boolean): v
       kv("Budget", b.maxRegistrationPrice !== undefined ? `${b.maxRegistrationPrice.toFixed(2)} ${b.currency}` : warn("none"), 0, 16);
     }
     kv("Discord", t.notifications.discord.enabled && process.env[t.notifications.discord.webhookEnv] ? good("ENABLED") : warn("DISABLED"), 0, 16);
+    const tg = rt.config.notifications.telegram;
+    if (tg.enabled) kv("Telegram", t.notifications.telegram.enabled && process.env[tg.botTokenEnv] && tg.chatId ? good("ENABLED") : warn("MISSING TOKEN OR CHAT"), 0, 16);
     kv("Safety", `DRY RUN = ${dryRun ? good("ON") : bad(bold("OFF"))}   PREMIUM = ${t.registration.budget.allowPremium ? warn("ALLOWED") : good("BLOCKED")}`, 0, 16);
   }
   out();
 }
 
-export async function watchCommand(rt: Runtime, opts: { target?: string[]; dryRun?: boolean; json?: boolean }): Promise<number> {
+export async function watchCommand(
+  rt: Runtime,
+  opts: { target?: string[]; dryRun?: boolean; json?: boolean; metricsPort?: string; metricsHost?: string },
+): Promise<number> {
   const targets = selectTargets(rt, opts.target);
   const dryRun = rt.config.app.dryRun || opts.dryRun === true;
+  await rt.clockSync.start();
   const store = rt.openStore();
   const notifier = rt.buildNotifier(targets);
   const events = new EventPublisher({ store, logger: rt.logger, notifier, timeZone: rt.config.app.timezone });
   const confirm = isInteractive() ? terminalConfirm() : undefined;
+
+  const clock = rt.clockSync.status();
+  if (clock.applied && clock.offsetMs !== undefined && Math.abs(clock.offsetMs) > rt.config.app.clock.warnMs) {
+    rt.logger.warn(`Scheduling on NTP time: this machine is ${(clock.offsetMs / 1000).toFixed(2)} s ${clock.offsetMs > 0 ? "behind" : "ahead"}.`);
+  }
 
   const orchestrators = [];
   for (const target of targets) {
     orchestrators.push({ target, orchestrator: await prepareWatch(rt, target, { store, events, dryRun, confirm }) });
   }
   if (!opts.json) printBanner(rt, targets, dryRun);
+  if (opts.metricsPort) {
+    const host = opts.metricsHost ?? "127.0.0.1";
+    await startMetricsServer({
+      host,
+      port: Number(opts.metricsPort),
+      token: process.env.DROPCATCH_METRICS_TOKEN,
+      health: () => ({ watching: targets.length, clock: rt.clockSync.status() }),
+    });
+    rt.logger.info(`Metrics on http://${host}:${opts.metricsPort}/metrics (health: /healthz)`);
+  }
+  setWatchesRunning(targets.length);
 
   const controller = new AbortController();
   let interrupts = 0;
@@ -94,6 +118,7 @@ export async function watchCommand(rt: Runtime, opts: { target?: string[]; dryRu
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    setWatchesRunning(0);
     await notifier.drain(5000);
   }
 

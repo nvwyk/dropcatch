@@ -161,6 +161,18 @@ describe("drop orchestration (plan step J simulations)", () => {
     assert.equal(mockStats.get("a")?.registrations ?? 0, 0);
   });
 
+  it("keeps registration-only accounts warm while polled sources are left alone", async () => {
+    const h = harness(mockConfig({
+      accounts: { src: { scenario: "always-unavailable" }, reg: { scenario: "always-unavailable" } },
+      target: { availability: { providers: ["src"] }, registration: autoBuy(["reg"]) },
+    }));
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 400);
+    assert.equal(await h.orchestrator("t1").run(controller.signal), "stopped");
+    assert.ok(mockStats.get("reg")!.warmups >= 1, "registration-only account warmed");
+    assert.equal(mockStats.get("src")!.warmups, 0, "polled source needs no warmup");
+  });
+
   it("Discord failing does not affect the purchase", async () => {
     let hits = 0;
     const server = createServer((_req, res) => {
@@ -174,7 +186,7 @@ describe("drop orchestration (plan step J simulations)", () => {
       const router = new ProxyRouter();
       after(() => router.close());
       const channel = new DiscordChannel({ webhookUrl: `http://127.0.0.1:${port}/hook`, username: "t", timeZone: "UTC", transport: new UndiciTransport({ router }), timeoutMs: 500, retryDelayMs: 20 });
-      const notifier = new Notifier(new Map([["t1", { channels: [channel], events: new Set(["registration_succeeded", "availability_detected"] as const) }]]), silentLogger);
+      const notifier = new Notifier(new Map([["t1", { channels: [{ channel, events: new Set(["registration_succeeded", "availability_detected"] as const) }] }]]), silentLogger);
       const events = new EventPublisher({ store: h.store, logger: silentLogger, notifier, timeZone: "UTC" });
       const o = h.orchestrator("t1", { events });
       const started = Date.now();

@@ -66,7 +66,7 @@ export interface ResolvedTarget {
     confirmTimeoutMs: number;
     onFailure: "resume-watch" | "stop";
   };
-  notifications: { discord: { enabled: boolean; webhookEnv: string } };
+  notifications: { discord: { enabled: boolean; webhookEnv: string }; telegram: { enabled: boolean } };
 }
 
 export interface ResolvedConfig {
@@ -275,6 +275,10 @@ export function resolveConfig(
   }
 
   checkProxyRef(config.notifications.discord.proxy, "notifications.discord.proxy");
+  checkProxyRef(config.notifications.telegram.proxy, "notifications.telegram.proxy");
+  if (config.notifications.telegram.enabled && !config.notifications.telegram.chatId) {
+    errors.push("notifications.telegram.chatId is required when Telegram is enabled (message your bot, then run: dropcatch test telegram --chats)");
+  }
 
   // ---- targets -------------------------------------------------------------------
   const targets: ResolvedTarget[] = [];
@@ -391,8 +395,10 @@ export function resolveConfig(
       if (r.mode === "auto-buy") {
         const discordOn = config.notifications.discord.enabled && t.notifications.discord.enabled;
         const hookEnv = t.notifications.discord.webhookEnv ?? config.notifications.discord.webhookEnv;
-        if (!discordOn) warnings.push(`${where}: AUTO-BUY is enabled but Discord notifications are disabled`);
-        else if (!env[hookEnv]) warnings.push(`${where}: AUTO-BUY is enabled but ${hookEnv} is not set`);
+        const tg = config.notifications.telegram;
+        const telegramOn = tg.enabled && t.notifications.telegram.enabled && Boolean(env[tg.botTokenEnv]);
+        if (!discordOn && !telegramOn) warnings.push(`${where}: AUTO-BUY is enabled but no notification channel (Discord or Telegram) is on`);
+        else if (discordOn && !env[hookEnv] && !telegramOn) warnings.push(`${where}: AUTO-BUY is enabled but ${hookEnv} is not set`);
         if (databasePath === ":memory:" && !dryRun) {
           errors.push(`${where}: live AUTO-BUY needs a persistent app.database (duplicate-purchase protection must survive restarts)`);
         }
@@ -449,6 +455,7 @@ export function resolveConfig(
           enabled: config.notifications.discord.enabled && t.notifications.discord.enabled,
           webhookEnv: t.notifications.discord.webhookEnv ?? config.notifications.discord.webhookEnv,
         },
+        telegram: { enabled: config.notifications.telegram.enabled && t.notifications.telegram.enabled },
       },
     });
   });

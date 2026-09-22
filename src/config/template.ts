@@ -1,6 +1,6 @@
 import { stringify } from "yaml";
 
-export type RegistrarChoice = "porkbun" | "namecheap" | "cloudflare";
+export type RegistrarChoice = "porkbun" | "namecheap" | "cloudflare" | "ovh";
 
 export interface TemplateAnswers {
   timezone: string;
@@ -14,6 +14,7 @@ export interface TemplateAnswers {
   mode: "notify-only" | "confirm" | "auto-buy";
   budget?: { max: number; currency: string };
   namecheapContact?: Record<string, string>;
+  ovhOwnerContact?: string;
   discord: boolean;
 }
 
@@ -38,6 +39,12 @@ const ACCOUNT_BLOCKS: Record<RegistrarChoice, Record<string, unknown>> = {
     environment: "production",
     credentials: { apiToken: "CLOUDFLARE_API_TOKEN", accountId: "CLOUDFLARE_ACCOUNT_ID" },
   },
+  ovh: {
+    provider: "ovh",
+    environment: "production",
+    credentials: { applicationKey: "OVH_APPLICATION_KEY", applicationSecret: "OVH_APPLICATION_SECRET", consumerKey: "OVH_CONSUMER_KEY" },
+    options: { endpoint: "ovh-eu", ovhSubsidiary: "PL" },
+  },
 };
 
 export function accountId(registrar: RegistrarChoice): string {
@@ -50,6 +57,7 @@ export function renderConfig(a: TemplateAnswers): string {
   for (const r of a.registrars) {
     const block: Record<string, unknown> = { ...ACCOUNT_BLOCKS[r] };
     if (r === "namecheap" && a.namecheapContact) block.options = { contact: a.namecheapContact };
+    if (r === "ovh" && a.ovhOwnerContact) block.options = { ...(block.options as object), ownerContact: a.ovhOwnerContact };
     accounts[accountId(r)] = block;
   }
   const registrationActive = a.mode !== "notify-only" && a.registrars.length > 0;
@@ -70,7 +78,7 @@ export function renderConfig(a: TemplateAnswers): string {
     maxTotalAttempts: 1,
     budget: {
       ...(a.budget ? { maxRegistrationPrice: a.budget.max } : {}),
-      currency: a.budget?.currency ?? "USD",
+      currency: a.budget?.currency ?? (a.registrars.includes("ovh") ? "PLN" : "USD"),
       allowPremium: false,
     },
   };

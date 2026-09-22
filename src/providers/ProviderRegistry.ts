@@ -4,6 +4,7 @@ import { ConfigError } from "../core/errors.ts";
 import { cloudflarePlugin } from "./cloudflare/CloudflareProvider.ts";
 import { mockPlugin } from "./mock/MockProvider.ts";
 import { namecheapPlugin } from "./namecheap/NamecheapProvider.ts";
+import { ovhPlugin } from "./ovh/OvhProvider.ts";
 import { porkbunPlugin } from "./porkbun/PorkbunProvider.ts";
 import { rdapPlugin } from "./rdap/RdapProvider.ts";
 import type { AnyProviderPlugin } from "./types.ts";
@@ -52,6 +53,7 @@ export function builtinRegistry(): ProviderRegistry {
     .register(porkbunPlugin)
     .register(namecheapPlugin)
     .register(cloudflarePlugin)
+    .register(ovhPlugin)
     .register(mockPlugin);
 }
 

@@ -165,6 +165,20 @@ off and retry three times, and repeated `provider_error` / `rate_limited` events
 - Raw provider responses are never persisted. On POSIX, config and `.env` files readable by group or other
   trigger a warning.
 
+## Time
+
+`ClockSync` measures the offset to NTP (SNTP over UDP, lowest round trip of a few samples) at start and
+every 15 minutes. With `app.clock.correct`, the orchestrator's clock is `Date.now() + offset`, so phases
+and the drop-aligned grid follow true time. Provider timestamps, freshness checks and rate-limit pauses
+stay on the system clock so they remain comparable with each other. Offsets above `maxCorrectionMs` are
+never applied.
+
+## Observability
+
+A dependency-free Prometheus registry is fed from the same hooks as the audit trail: each availability
+result, each published event, each notification delivery. `/metrics` is served by the dashboard or by
+`watch --metrics-port`, answering loopback, signed-in sessions or a bearer token.
+
 ## Deferred, with reasons
 
 - Parallel multi-registrar purchase ("race"): a lost response at registrar A cannot be told apart from a

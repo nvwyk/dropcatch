@@ -46,6 +46,7 @@ export interface MockStats {
   registrations: number;
   preflights: number;
   ownershipLookups: number;
+  warmups: number;
   owned: Set<string>;
 }
 
@@ -59,7 +60,7 @@ export function resetMockStats(): void {
 function statsFor(accountId: string): MockStats {
   let s = mockStats.get(accountId);
   if (!s) {
-    s = { checks: 0, registrations: 0, preflights: 0, ownershipLookups: 0, owned: new Set() };
+    s = { checks: 0, registrations: 0, preflights: 0, ownershipLookups: 0, warmups: 0, owned: new Set() };
     mockStats.set(accountId, s);
   }
   return s;
@@ -102,6 +103,10 @@ export const mockPlugin = definePlugin<MockOptions>({
     }
 
     return {
+      async warmup() {
+        stats.warmups++;
+      },
+
       async check(req) {
         const meta = startCall(ctx.accountId, "mock", req.domain, ctx.now());
         stats.checks++;

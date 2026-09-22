@@ -156,6 +156,35 @@ describe("dashboard server", () => {
     assert.equal((await call("PUT", "/api/secrets/NODE_OPTIONS", { value: "--require x" })).status, 400);
   });
 
+  it("serves health and metrics for monitoring", async () => {
+    const health = await fetch(`${base}/healthz`);
+    assert.equal(health.status, 200);
+    assert.equal(((await health.json()) as { status: string }).status, "ok");
+    const m = await fetch(`${base}/metrics`);
+    assert.equal(m.status, 200, "loopback scrapers are allowed");
+    assert.match(await m.text(), /dropcatch_info\{version=/);
+  });
+
+  it("imports targets in bulk and exposes them in the calendar", async () => {
+    const text = ["imported-one.pl 2026-12-01 10:00", "imported-two.com"].join("\n");
+    const preview = await call("POST", "/api/import", { text, defaults: { mode: "notify-only", timezone: "Europe/Warsaw" } });
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.deepEqual([preview.body.applied, (preview.body.counts as { create: number }).create], [false, 2]);
+    const applied = await call("POST", "/api/import", { text, apply: true, defaults: { mode: "notify-only", timezone: "Europe/Warsaw" } });
+    assert.equal(applied.body.applied, true);
+    const cal = await call("GET", "/api/calendar");
+    assert.ok((cal.body.entries as Array<{ id: string }>).some((e) => e.id === "imported-one-pl"));
+    const ics = await fetch(`${base}/api/calendar.ics`, { headers: { cookie } });
+    assert.match(ics.headers.get("content-type")!, /text\/calendar/);
+    assert.match(await ics.text(), /SUMMARY:Drop: imported-one\.pl/);
+  });
+
+  it("guides Telegram setup when the bot token is missing", async () => {
+    const chats = await call("GET", "/api/telegram/chats");
+    assert.equal(chats.status, 400);
+    assert.match(String(chats.body.error), /TELEGRAM_BOT_TOKEN/);
+  });
+
   it("locks out an IP after repeated wrong passwords", async () => {
     for (let i = 0; i < 5; i++) await call("POST", "/api/login", { password: `wrong-${i}-password` });
     assert.equal((await call("POST", "/api/login", { password: "correct horse battery" })).status, 429);

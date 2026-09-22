@@ -100,8 +100,9 @@ function button(label, { kind = "", iconName, onClick, type = "button", title, d
     iconName ? icon(iconName) : null, label);
 }
 
-function linkButton(label, href, { kind = "", iconName } = {}) {
-  return h("a", { class: `btn ${kind}`, href }, iconName ? icon(iconName) : null, label);
+function linkButton(label, href, { kind = "", iconName, title } = {}) {
+  const aria = label ? undefined : title || (iconName === "caret-left" ? "Previous" : iconName === "caret-right" ? "Next" : undefined);
+  return h("a", { class: `btn ${kind}`, href, title, "aria-label": aria }, iconName ? icon(iconName) : null, label);
 }
 
 // ---------------------------------------------------------------- API
@@ -367,7 +368,7 @@ function connectStream() {
 }
 
 function scheduleRefresh() {
-  if (!["overview", "target", "activity"].includes(S.route)) return;
+  if (!["overview", "target", "activity", "calendar"].includes(S.route)) return;
   clearTimeout(S.refreshTimer);
   S.refreshTimer = setTimeout(() => {
     const active = document.activeElement;
@@ -389,6 +390,7 @@ setInterval(() => {
 
 const NAV = [
   ["overview", "Overview", "squares-four"],
+  ["calendar", "Calendar", "calendar-blank"],
   ["check", "Check", "magnifying-glass"],
   ["activity", "Activity", "pulse"],
   ["providers", "Providers", "plugs-connected"],
@@ -529,7 +531,7 @@ function pageLogin() {
 }
 
 function registrarChecks(selected = []) {
-  const names = [["porkbun", "Porkbun", "Real-time check, exact-price guard, server-side dry run"], ["namecheap", "Namecheap", "Needs a whitelisted IP"], ["cloudflare", "Cloudflare", "API beta, subset of TLDs"]];
+  const names = [["ovh", "OVHcloud", "Sells .pl and .com.pl (prices in PLN, without VAT)"], ["porkbun", "Porkbun", "Real-time check, exact-price guard, server-side dry run. No .pl"], ["namecheap", "Namecheap", "Needs a whitelisted IP"], ["cloudflare", "Cloudflare", "API beta, subset of TLDs"]];
   return h("div", { class: "stack-sm" }, names.map(([v, label, help]) => checkbox({ name: "registrars", value: v, label, help, checked: selected.includes(v) })));
 }
 
@@ -554,7 +556,8 @@ function timezoneInput(name, value) {
 function pageWelcome() {
   const budget = h("div", { class: "form-grid" },
     field({ label: "Maximum price", name: "maxPrice", type: "number", value: "20", attrs: { min: "0.01", step: "0.01", inputmode: "decimal" } }),
-    field({ label: "Currency", name: "currency", value: "USD", attrs: { maxlength: "3" } }));
+    field({ label: "Currency", name: "currency", value: "USD", attrs: { maxlength: "3" }, help: "OVHcloud Poland prices in PLN." }),
+    field({ label: "OVH owner contact id", name: "ovhOwnerContact", placeholder: "12345", help: "Only for buying with OVHcloud: OVH manager > contacts.", autocomplete: "off" }));
   const form = h("form", { class: "stack", novalidate: true },
     field({ label: "Domain to watch", name: "domain", placeholder: "example.pl", required: true, autocomplete: "off" }),
     h("div", { class: "form-grid" },
@@ -571,7 +574,7 @@ function pageWelcome() {
   onSubmit(form, async (d) => {
     await api("POST", "/api/config/quickstart", {
       domain: d.domain, expectedAt: d.expectedAt, timezone: d.timezone, registrars: d.registrars || [],
-      mode: d.mode, maxPrice: d.maxPrice, currency: d.currency, discord: d.discord,
+      mode: d.mode, maxPrice: d.maxPrice, currency: d.currency, ovhOwnerContact: d.ovhOwnerContact, discord: d.discord,
     });
     toast("Config created in dry-run mode. Add your API keys next.", "success");
     location.hash = "#/providers";
@@ -674,6 +677,12 @@ async function pageOverview() {
   if (!o.app.dryRun && registering) {
     banners.push(h("div", { class: "banner danger" }, icon("lightning"), h("div", {}, h("strong", { text: "Live purchasing is on. " }), "A successful registration charges your registrar account and cannot be refunded.")));
   }
+  const ck = o.clock;
+  if (ck.offsetMs !== undefined && Math.abs(ck.offsetMs) > ck.warnMs && !ck.applied) {
+    banners.push(h("div", { class: "banner warning" }, icon("timer"), h("div", {},
+      h("strong", { text: `This machine's clock is ${(Math.abs(ck.offsetMs) / 1000).toFixed(2)} s ${ck.offsetMs > 0 ? "slow" : "fast"} and is not being corrected. ` }),
+      "Drops would be polled at the wrong moment. Enable NTP on the system, or set app.clock.correct: true.")));
+  }
   if (o.app.warnings.length) {
     banners.push(h("details", { class: "banner warning" }, h("summary", { class: "row" }, icon("warning"), `${o.app.warnings.length} configuration warning${o.app.warnings.length > 1 ? "s" : ""}`),
       h("ul", {}, o.app.warnings.map((w) => h("li", { text: w })))));
@@ -689,9 +698,7 @@ async function pageOverview() {
     h("div", { class: "instrument" }, h("span", { class: "label", text: "Checks, 24 h" }),
       h("span", { class: "value", text: o.checks24h.toLocaleString("en-US") }),
       h("span", { class: "hint", text: o.latency.length ? `${o.latency.length} source${o.latency.length > 1 ? "s" : ""} with history` : "no history yet" })),
-    h("div", { class: "instrument" }, h("span", { class: "label", text: "Discord" }),
-      h("span", { class: "value", text: String(o.notifications.sent) }),
-      h("span", { class: "hint", text: o.notifications.failed ? `${o.notifications.failed} failed since start` : "sent since start" })));
+    clockInstrument(o.clock));
 
   const targets = o.targets.length
     ? h("div", {}, o.targets.map(targetRow))
@@ -700,10 +707,10 @@ async function pageOverview() {
 
   const latency = o.latency.length
     ? h("div", { class: "table-wrap" }, h("table", {},
-      h("thead", {}, h("tr", {}, ["Source", "Checks", "p50", "p95", "Errors"].map((x) => h("th", { text: x })))),
+      h("thead", {}, h("tr", {}, ["Source", "Checks", "p50 / p95", "Errors"].map((x) => h("th", { text: x })))),
       h("tbody", {}, o.latency.map((l) => h("tr", {},
-        h("td", { text: l.provider }), h("td", { text: String(l.checks) }), h("td", { text: `${l.p50Ms} ms` }),
-        h("td", { text: `${l.p95Ms} ms` }), h("td", { class: l.errors ? "status-error" : "dim", text: String(l.errors) }))))))
+        h("td", { text: l.provider }), h("td", { text: String(l.checks) }), h("td", { text: `${l.p50Ms} / ${l.p95Ms} ms` }),
+        h("td", { class: l.errors ? "status-error" : "dim", text: String(l.errors) }))))))
     : empty("No latency data", "Run a check or a watch to measure each source.");
 
   return {
@@ -711,7 +718,11 @@ async function pageOverview() {
     section: "overview",
     node: h("div", { class: "stack" },
       pageHead("Overview", `${o.targets.length} target${o.targets.length === 1 ? "" : "s"}, profile ${o.app.profile}`,
-        [linkButton("Check a domain", "#/check", { iconName: "magnifying-glass" }), o.app.configExists ? linkButton("Add target", "#/targets/new", { kind: "primary", iconName: "plus" }) : null]),
+        [
+          linkButton("Check a domain", "#/check", { iconName: "magnifying-glass" }),
+          o.app.configExists ? button("Import", { iconName: "upload-simple", onClick: () => importDialog() }) : null,
+          o.app.configExists ? linkButton("Add target", "#/targets/new", { kind: "primary", iconName: "plus" }) : null,
+        ]),
       banners,
       confirmationCards(o.confirmations),
       instruments,
@@ -732,7 +743,10 @@ function kvList(pairs) {
 async function pageTarget(params) {
   const id = decodeURIComponent(params[0]);
   if (!S.meta) await loadMeta();
-  const d = await api("GET", `/api/targets/${encodeURIComponent(id)}`);
+  const [d, latency] = await Promise.all([
+    api("GET", `/api/targets/${encodeURIComponent(id)}`),
+    api("GET", `/api/targets/${encodeURIComponent(id)}/latency`).catch(() => ({ series: [] })),
+  ]);
   const t = d.target;
   if (!t) {
     return { title: id, section: "overview", node: h("div", { class: "stack" }, pageHead(id, "Not in the current config"), panel(null, empty("This target is only in history", "It was removed from the config. Its audit trail is kept below.")), panel("Timeline", feed(d.events, { withTarget: false }), { flush: true })) };
@@ -811,6 +825,7 @@ async function pageTarget(params) {
           ["Last outcome", t.lastOutcome ? `${t.lastOutcome.outcome}, ${fmtRelative(t.lastOutcome.at)}` : "n/a"],
         ]))),
       panel("Sources, latest answer", sources, { flush: true }),
+      panel("Response time", latencyPanel(latency.series), { flush: true }),
       panel("Purchase attempts", attempts, { flush: true }),
       panel("Runs", runs, { flush: true }),
       panel("Timeline", feed(d.events, { withTarget: false }), { flush: true })),
@@ -1095,6 +1110,7 @@ async function pageProviders() {
 
 const OPTION_HINTS = {
   porkbun: "whoisPrivacy: true",
+  ovh: "endpoint: ovh-eu\novhSubsidiary: PL\nownerContact: 12345\nautoPay: true",
   namecheap: "contact:\n  firstName: Marta\n  lastName: Kowalczyk\n  address1: ul. Prosta 12\n  city: Warszawa\n  stateProvince: Mazowieckie\n  postalCode: 00-850\n  country: PL\n  phone: +48.221234567\n  email: marta@example.pl",
   cloudflare: "privacyMode: redaction\nautoRenew: false",
   mock: "scenario: available-after-checks\navailableAfterChecks: 3\nprice: 9.99",
@@ -1221,11 +1237,62 @@ async function pageNotifications() {
     render({ quiet: true });
   });
 
+  const tg = cfg.raw.notifications?.telegram || {};
+  const tokenEnv = tg.botTokenEnv || "TELEGRAM_BOT_TOKEN";
+  const token = secrets.secrets.find((s) => s.name === tokenEnv);
+  const tgSelected = tg.events || DEFAULT_EVENTS;
+  const tokenForm = h("form", { class: "row", novalidate: true },
+    h("div", { style: "flex:1;min-width:260px" }, field({ label: "Bot token", name: "value", type: "password", autocomplete: "off", placeholder: "123456789:AA…", help: `From @BotFather. Stored as ${tokenEnv}; never displayed again.` })),
+    h("div", { style: "align-self:center" }, button(token?.set ? "Replace token" : "Save token", { kind: "primary", type: "submit", iconName: "key" })));
+  onSubmit(tokenForm, async (d) => {
+    await api("PUT", `/api/secrets/${encodeURIComponent(tokenEnv)}`, { value: d.value });
+    toast("Telegram bot token saved.", "success");
+    render({ quiet: true });
+  });
+  const chatInput = h("input", { type: "text", name: "chatId", value: tg.chatId || "", autocomplete: "off", spellcheck: "false", class: "mono", placeholder: "123456789 or -100… for groups" });
+  const chatList = h("div", { class: "stack-sm", "aria-live": "polite" });
+  const tgForm = h("form", { class: "stack", novalidate: true },
+    checkbox({ name: "enabled", label: "Telegram notifications on", checked: tg.enabled === true }),
+    h("div", { class: "form-grid" },
+      field({ label: "Chat id", name: "chatId", control: chatInput, help: "Send any message to your bot, then use Find my chat." }),
+      h("div", { style: "align-self:end" }, button("Find my chat", { iconName: "magnifying-glass", disabled: !token?.set, onClick: async () => {
+        try {
+          const r = await api("GET", "/api/telegram/chats");
+          chatList.replaceChildren(...(r.chats.length
+            ? r.chats.map((c) => h("div", { class: "row" }, h("code", { text: String(c.id) }), h("span", { class: "muted", text: `${c.type || ""} ${c.title || c.username || c.first_name || ""}` }),
+              button("Use this chat", { kind: "sm", onClick: () => (chatInput.value = String(c.id)) })))
+            : [h("p", { class: "muted", text: "No chats yet. Send a message to your bot first, then try again." })]));
+        } catch (err) {
+          toast(err.message, "danger");
+        }
+      } }))),
+    chatList,
+    h("fieldset", {}, h("legend", { text: "Events to send (detections and purchases ring, the rest arrive silently)" }),
+      h("div", { class: "grid-2" }, EVENT_TYPES.map((e) => checkbox({ name: "events", value: e, label: e.replaceAll("_", " "), checked: tgSelected.includes(e) })))),
+    h("div", { class: "form-foot" },
+      button("Send test message", { iconName: "paper-plane-tilt", disabled: !token?.set || !tg.chatId, onClick: async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          await api("POST", "/api/telegram/test");
+          toast("Telegram test message delivered.", "success");
+        } catch (err) {
+          toast(err.message, "danger");
+        } finally {
+          e.currentTarget.disabled = false;
+        }
+      } }),
+      button("Save Telegram settings", { kind: "primary", type: "submit" })));
+  onSubmit(tgForm, async (d) => {
+    await api("PATCH", "/api/config/notifications", { telegram: { enabled: d.enabled, chatId: d.chatId.trim() || null, events: d.events } });
+    toast("Telegram settings saved.", "success");
+    render({ quiet: true });
+  });
+
   return {
     title: "Notifications",
     section: "notifications",
     node: h("div", { class: "stack" },
-      pageHead("Notifications", "Discord gets events in the background. A slow or failing webhook never delays a purchase.",
+      pageHead("Notifications", "Discord and Telegram get events in the background. A slow or failing channel never delays a purchase.",
         button("Send test message", { iconName: "paper-plane-tilt", disabled: !hook?.set, onClick: async (e) => {
           e.currentTarget.disabled = true;
           try {
@@ -1240,7 +1307,14 @@ async function pageNotifications() {
       panel("Discord webhook", h("div", { class: "stack-sm" },
         h("div", { class: "row" }, hook?.set ? badge("Webhook set", "success") : badge("No webhook yet", "warning")),
         hookForm)),
-      panel("Settings", settings)),
+      panel("Discord settings", settings),
+      panel("Telegram", h("div", { class: "stack" },
+        h("div", { class: "row" },
+          token?.set ? badge("Bot token set", "success") : badge("No bot token yet", "warning"),
+          tg.chatId ? badge(`Chat ${tg.chatId}`, "mono") : badge("No chat id yet", "warning"),
+          tg.enabled ? badge("On", "success") : badge("Off")),
+        tokenForm,
+        tgForm))),
   };
 }
 
@@ -1402,6 +1476,290 @@ async function pageRawConfig() {
   };
 }
 
+// ---------------------------------------------------------------- clock
+
+function clockInstrument(c) {
+  let value = "n/a";
+  let hint = "measuring…";
+  if (!c.enabled) {
+    value = "off";
+    hint = "NTP check disabled in config";
+  } else if (c.error && c.offsetMs === undefined) {
+    hint = "NTP unreachable, using system clock";
+  } else if (c.offsetMs !== undefined) {
+    const abs = Math.abs(c.offsetMs);
+    value = abs < 20 ? "in sync" : `${(abs / 1000).toFixed(2)}\u00a0s ${c.offsetMs > 0 ? "slow" : "fast"}`;
+    hint = `${c.server}${abs >= 20 ? (c.applied ? ", corrected" : ", not corrected") : ""}`;
+  }
+  return h("div", { class: "instrument" }, h("span", { class: "label", text: "Clock vs NTP" }),
+    h("span", { class: "value", text: value }), h("span", { class: "hint", text: hint }));
+}
+
+// ---------------------------------------------------------------- latency chart (small multiples)
+
+function percentile(sorted, q) {
+  return sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : 0;
+}
+
+function latencyPanel(series) {
+  const byProvider = new Map();
+  for (const p of series) {
+    if (!byProvider.has(p.provider)) byProvider.set(p.provider, []);
+    byProvider.get(p.provider).push(p);
+  }
+  if (!byProvider.size) return empty("No measurements yet", "Response times appear once the target has been checked.");
+  const definitive = series.filter((p) => p.status === "available" || p.status === "unavailable");
+  const all = definitive.map((p) => p.ms).sort((a, b) => a - b);
+  const yMax = Math.max(50, Math.ceil((percentile(all, 0.98) * 1.2) / 10) * 10);
+  const tMin = Math.min(...series.map((p) => p.t));
+  const tMax = Math.max(...series.map((p) => p.t), tMin + 1);
+  const rows = [...byProvider.entries()].map(([provider, points]) => {
+    const ok = points.filter((p) => p.status === "available" || p.status === "unavailable");
+    const sorted = ok.map((p) => p.ms).sort((a, b) => a - b);
+    const problems = points.length - ok.length;
+    return h("div", { class: "spark-row" },
+      h("div", { class: "spark-meta" },
+        h("div", { class: "name", text: provider }),
+        h("div", { class: "nums" },
+          h("span", { text: `p50 ${percentile(sorted, 0.5)}\u00a0ms` }), " ",
+          h("span", { class: "muted", text: `p95 ${percentile(sorted, 0.95)}\u00a0ms` })),
+        problems ? h("div", { class: "help", text: `${problems} error${problems > 1 ? "s" : ""} or rate limits (gaps)` }) : null),
+      sparkline(points, { yMax, tMin, tMax, label: provider }));
+  });
+  return h("div", {}, rows, h("p", { class: "help chart-note", text: `Last ${series.length} checks. Shared scale 0 to ${yMax}\u00a0ms. Hover or use the arrow keys for exact values.` }));
+}
+
+function sparkline(points, { yMax, tMin, tMax, label }) {
+  const W = 600;
+  const H = 56;
+  const x = (t) => ((t - tMin) / (tMax - tMin)) * W;
+  const y = (ms) => H - Math.min(1, ms / yMax) * (H - 4) - 2;
+  const good = (p) => p.status === "available" || p.status === "unavailable";
+  let line = "";
+  let area = "";
+  let run = [];
+  const flush = () => {
+    if (run.length) {
+      const seg = run.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.ms).toFixed(1)}`).join("");
+      line += seg;
+      area += `${seg}L${x(run[run.length - 1].t).toFixed(1)},${H}L${x(run[0].t).toFixed(1)},${H}Z`;
+    }
+    run = [];
+  };
+  for (const p of points) {
+    if (good(p)) run.push(p);
+    else flush();
+  }
+  flush();
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  const mk = (tag, attrs) => {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    svg.append(el);
+    return el;
+  };
+  mk("line", { class: "base", x1: "0", x2: String(W), y1: String(H - 0.5), y2: String(H - 0.5) });
+  if (area) mk("path", { class: "area", d: area });
+  if (line) mk("path", { class: "line", d: line });
+
+  const last = [...points].reverse().find(good);
+  const cross = h("span", { class: "cross", hidden: true });
+  const tip = h("span", { class: "tip", role: "status", hidden: true });
+  const dot = last ? h("span", { class: "dot", style: `left:${(x(last.t) / W) * 100}%;top:${(y(last.ms) / H) * 100}%` }) : null;
+  const wrap = h("div", {
+    class: "spark",
+    tabindex: "0",
+    role: "img",
+    "aria-label": `${label} response time, ${points.length} checks${last ? `, latest ${last.ms} ms` : ""}`,
+  }, svg, dot, cross, tip);
+  let index = points.length - 1;
+  const show = (i) => {
+    index = Math.max(0, Math.min(points.length - 1, i));
+    const p = points[index];
+    const left = `${(x(p.t) / W) * 100}%`;
+    cross.style.left = left;
+    tip.style.left = left;
+    cross.hidden = false;
+    tip.hidden = false;
+    tip.replaceChildren(
+      h("strong", { text: good(p) ? `${p.ms}\u00a0ms` : STATUS_LABEL[p.status] || p.status }),
+      h("span", { class: "muted", text: ` ${fmtTime(p.t)}${good(p) ? `, ${STATUS_LABEL[p.status]}` : ""}` }));
+  };
+  const hide = () => {
+    cross.hidden = true;
+    tip.hidden = true;
+  };
+  wrap.addEventListener("pointermove", (e) => {
+    const r = wrap.getBoundingClientRect();
+    const t = tMin + ((e.clientX - r.left) / r.width) * (tMax - tMin);
+    let best = 0;
+    for (let i = 1; i < points.length; i++) if (Math.abs(points[i].t - t) < Math.abs(points[best].t - t)) best = i;
+    show(best);
+  });
+  wrap.addEventListener("pointerleave", hide);
+  wrap.addEventListener("focus", () => show(index));
+  wrap.addEventListener("blur", hide);
+  wrap.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      show(index + (e.key === "ArrowRight" ? 1 : -1));
+    }
+  });
+  return wrap;
+}
+
+// ---------------------------------------------------------------- import
+
+async function importDialog() {
+  const cfg = await api("GET", "/api/config");
+  const regAccounts = cfg.accounts.filter((a) => a.registration && a.provider !== "mock");
+  const text = h("textarea", { name: "text", class: "code", rows: 8, spellcheck: "false", style: "min-height:160px", placeholder: "sklep-kawowy.pl 2026-10-05 10:00\nexample-brand.com\n# or a CSV with a header row: domain,expectedAt,mode,maxPrice" });
+  const file = h("input", { type: "file", accept: ".csv,.txt,text/csv,text/plain", "aria-label": "Load a CSV or text file" });
+  file.addEventListener("change", async () => {
+    if (file.files?.[0]) text.value = await file.files[0].text();
+  });
+  const budget = h("div", { class: "form-grid" },
+    field({ label: "Maximum price", name: "maxPrice", type: "number", attrs: { min: "0.01", step: "0.01", inputmode: "decimal" } }),
+    field({ label: "Currency", name: "currency", value: regAccounts.some((a) => a.provider === "ovh") ? "PLN" : "USD", attrs: { maxlength: "3" } }),
+    h("fieldset", { class: "wide" }, h("legend", { text: "Registrars" }),
+      regAccounts.length ? h("div", { class: "stack-sm" }, regAccounts.map((a) => checkbox({ name: "registrars", value: a.id, label: a.id, help: a.provider, checked: true }))) : h("p", { class: "muted", text: "No registrar accounts yet." })));
+  const preview = h("div", { class: "stack-sm", "aria-live": "polite" });
+  const importBtn = button("Import", { kind: "primary", type: "submit", disabled: true });
+  const form = h("form", { class: "panel-body", novalidate: true },
+    h("h2", { text: "Import targets" }),
+    h("p", { class: "muted", text: "One domain per line with an optional drop time, or a CSV with a domain column. Nothing is written until you confirm." }),
+    field({ label: "Domains", name: "text", control: text }),
+    h("div", { class: "row" }, file),
+    h("div", { class: "form-grid" },
+      h("div", { class: "field", dataset: { field: "timezone" } }, h("span", { class: "label-text", text: "Timezone of drop times" }), timezoneInput("timezone", cfg.raw.app?.timezone || S.tz), h("span", { class: "error-text", hidden: true })),
+      h("div", { class: "wide" }, checkbox({ name: "update", label: "Overwrite targets that already exist" }))),
+    h("fieldset", {}, h("legend", { text: "Default mode" }), modeChoices("mode", "notify-only")),
+    budget,
+    preview,
+    h("div", { class: "form-foot" },
+      button("Cancel", { onClick: () => dialog.close() }),
+      button("Preview", { iconName: "eye", onClick: () => run(false) }),
+      importBtn));
+  const dialog = h("dialog", { style: "width:min(760px, calc(100% - 32px))" }, form);
+  const syncMode = () => (budget.hidden = formData(form).mode === "notify-only");
+  form.addEventListener("change", syncMode);
+  syncMode();
+  const payload = (apply) => {
+    const d = formData(form);
+    return { text: d.text, update: d.update, apply, defaults: { mode: d.mode, maxPrice: d.maxPrice, currency: d.currency, registrars: d.registrars || [], timezone: d.timezone } };
+  };
+  async function run(apply) {
+    clearErrors(form);
+    try {
+      const r = await api("POST", "/api/import", payload(apply));
+      const c = r.counts;
+      preview.replaceChildren(
+        h("div", { class: "row" }, badge(`${c.create} new`, c.create ? "success" : ""), badge(`${c.update} update`, c.update ? "accent" : ""), badge(`${c.skip} skip`), badge(`${c.error} error`, c.error ? "danger" : "")),
+        r.rows.length ? h("div", { class: "table-wrap preview-table" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Line", "Target", "Domain", "Drop", "Result"].map((x) => h("th", { text: x })))),
+          h("tbody", {}, r.rows.map((row) => h("tr", {},
+            h("td", { text: String(row.line) }), h("td", { text: row.id || "" }), h("td", { text: row.domain || row.raw }),
+            h("td", { text: row.expectedAt ? fmtTime(Date.parse(row.expectedAt), { date: true, seconds: false }) : "none" }),
+            h("td", { class: row.action === "error" ? "status-error" : "", text: row.action === "error" || row.action === "skip" ? `${row.action}: ${row.reason}` : row.action })))))) : null);
+      importBtn.disabled = Boolean(c.error) || c.create + c.update === 0;
+      if (r.applied) {
+        dialog.close();
+        toast(`Imported ${c.create} new and ${c.update} updated target${c.create + c.update === 1 ? "" : "s"}.`, "success");
+        render({ quiet: true });
+      }
+    } catch (err) {
+      showError(form, err);
+    }
+  }
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    run(true);
+  });
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  text.focus();
+}
+
+// ---------------------------------------------------------------- calendar
+
+function dayKey(ms) {
+  const p = Object.fromEntries(tzFormatter({ year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+async function pageCalendar(_p, query) {
+  const data = await api("GET", "/api/calendar");
+  if (!S.meta) await loadMeta();
+  S.tz = data.timezone || S.tz;
+  const [ty, tm] = dayKey(data.now).split("-").map(Number);
+  const [y, m] = (query.get("m") || `${ty}-${tm}`).split("-").map(Number);
+  const monthStart = Date.UTC(y, m - 1, 1);
+  const lead = (new Date(monthStart).getUTCDay() + 6) % 7; // Monday first
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const cells = Math.ceil((lead + daysInMonth) / 7) * 7;
+  const byDay = new Map();
+  for (const e of data.entries) {
+    const k = dayKey(e.expectedAt);
+    if (!byDay.has(k)) byDay.set(k, []);
+    byDay.get(k).push(e);
+  }
+  const todayKey = dayKey(data.now);
+  const pad = (n) => String(n).padStart(2, "0");
+  const shift = (delta) => {
+    const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+    return `#/calendar?m=${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
+  };
+  const monthLabel = new Intl.DateTimeFormat("en-GB", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(monthStart));
+  const grid = h("div", { class: "cal-grid", role: "grid", "aria-label": monthLabel },
+    ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => h("div", { class: "cal-head", role: "columnheader", text: d })),
+    Array.from({ length: cells }, (_, i) => {
+      const date = new Date(Date.UTC(y, m - 1, 1 + i - lead));
+      const key = `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
+      const drops = byDay.get(key) || [];
+      const other = date.getUTCMonth() !== m - 1;
+      return h("div", { class: `cal-day${other ? " other" : ""}${key === todayKey ? " today" : ""}`, role: "gridcell" },
+        h("span", { class: "n", text: String(date.getUTCDate()) }),
+        drops.map((e) => h("a", {
+          class: `cal-chip${e.state === "SUCCEEDED" ? " done" : e.mode !== "notify-only" ? " buy" : ""}`,
+          href: `#/targets/${encodeURIComponent(e.id)}`,
+          title: `${e.unicode}, ${fmtTime(e.expectedAt, { date: true, zone: true })}, ${e.mode}`,
+        }, h("time", { datetime: new Date(e.expectedAt).toISOString(), text: fmtTime(e.expectedAt, { seconds: false }) }), h("span", { text: e.unicode }))));
+    }));
+  const upcoming = data.entries.filter((e) => e.windowEnd >= data.now).slice(0, 12);
+  const agenda = upcoming.length
+    ? h("ol", { class: "feed" }, upcoming.map((e) => h("li", {},
+      h("time", { datetime: new Date(e.expectedAt).toISOString(), text: fmtTime(e.expectedAt, { date: true, seconds: false }).replace(/ \d{4},?/, "") }),
+      h("div", { class: "what" },
+        h("a", { href: `#/targets/${encodeURIComponent(e.id)}`, text: e.unicode }),
+        h("div", { class: "row" },
+          h("span", { class: "num muted", dataset: { countdown: String(e.expectedAt) } }),
+          e.watching ? badge("Watching", "accent", h("span", { class: "live", "aria-hidden": "true" })) : null,
+          modeBadge(e.mode, S.meta?.dryRun))))))
+    : empty("Nothing scheduled", "Targets with a drop time appear here.", linkButton("Add target", "#/targets/new", { kind: "primary", iconName: "plus" }));
+  return {
+    title: "Calendar",
+    section: "calendar",
+    node: h("div", { class: "stack" },
+      pageHead("Calendar", `Drop times in ${S.tz}. Chips in red are set to buy.`, [
+        h("a", { class: "btn", href: "/api/calendar.ics", download: "dropcatch-drops.ics" }, icon("download-simple"), "Export .ics"),
+      ]),
+      h("div", { class: "split" },
+        h("section", { class: "panel cal-panel" },
+          h("div", { class: "panel-head" },
+            h("h2", { text: monthLabel }),
+            h("div", { class: "actions" },
+              linkButton("", shift(-1), { kind: "ghost sm", iconName: "caret-left" }),
+              linkButton("Today", "#/calendar", { kind: "sm" }),
+              linkButton("", shift(1), { kind: "ghost sm", iconName: "caret-right" }))),
+          h("div", { class: "cal-scroll" }, grid)),
+        panel("Upcoming", agenda, { flush: true }))),
+  };
+}
+
 // ---------------------------------------------------------------- router
 
 const ROUTES = [
@@ -1413,6 +1771,7 @@ const ROUTES = [
   [/^\/targets\/([^/]+)\/edit$/, pageTargetEdit, {}],
   [/^\/targets\/([^/]+)$/, pageTarget, { key: "target" }],
   [/^\/check$/, pageCheck, {}],
+  [/^\/calendar$/, pageCalendar, { key: "calendar" }],
   [/^\/providers$/, pageProviders, {}],
   [/^\/notifications$/, pageNotifications, {}],
   [/^\/activity$/, pageActivity, { key: "activity" }],

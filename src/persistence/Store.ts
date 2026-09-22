@@ -480,6 +480,15 @@ export class Store {
     return [...seen.values()];
   }
 
+  /** Recent checks for a domain, oldest first, for latency charts. */
+  latencySeries(domain: string, limit = 600): Array<{ provider: string; t: number; ms: number; status: string }> {
+    const rows = this.all<Row>(
+      "SELECT provider, latency_ms, status, checked_at FROM availability_checks WHERE domain = ? AND (phase IS NULL OR phase != 'final') ORDER BY id DESC LIMIT ?",
+      domain, limit,
+    );
+    return rows.reverse().map((r) => ({ provider: String(r.provider), t: Date.parse(String(r.checked_at)), ms: Number(r.latency_ms), status: String(r.status) }));
+  }
+
   checkCount(sinceIso = ""): number {
     return Number(this.get<{ n: number }>("SELECT COUNT(*) AS n FROM availability_checks WHERE checked_at >= ?", sinceIso)?.n ?? 0);
   }

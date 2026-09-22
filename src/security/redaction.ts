@@ -3,6 +3,9 @@ const MASK = "[REDACTED]";
 const PATTERNS: Array<[RegExp, string]> = [
   // Discord webhook URLs (token part).
   [/(https?:\/\/(?:[a-z]+\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/)[\w-]+/gi, `$1${MASK}`],
+  // Telegram bot tokens, alone or inside API URLs.
+  [/(api\.telegram\.org\/bot)[^/\s]+/gi, `$1${MASK}`],
+  [/\b\d{6,12}:[A-Za-z0-9_-]{30,}\b/g, MASK],
   // URL userinfo, e.g. proxy credentials: scheme://user:pass@host
   [/([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${MASK}@`],
   // Authorization headers / bearer tokens.

@@ -11,11 +11,13 @@ import {
   type ResolvedTarget,
 } from "../config/loader.ts";
 import type { AvailabilitySource } from "../core/availability/AvailabilityService.ts";
+import { ClockSync } from "../core/clockSync.ts";
 import { DEFAULT_NOTIFY_EVENTS, type EventType } from "../core/events.ts";
 import { ConfigError } from "../core/errors.ts";
 import type { RegistrationCandidate } from "../core/registration/RegistrationService.ts";
 import { createLogger, type LogLevel, type Logger } from "../logging/logger.ts";
 import { DiscordChannel, Notifier, type NotificationChannel, type NotifierRoute } from "../notifications/Notifier.ts";
+import { TelegramChannel } from "../notifications/Telegram.ts";
 import { Store } from "../persistence/Store.ts";
 import { builtinRegistry, type ProviderRegistry } from "../providers/ProviderRegistry.ts";
 import { RateLimiter } from "../providers/RateLimiter.ts";
@@ -75,6 +77,8 @@ export class Runtime {
   readonly transport: UndiciTransport;
   readonly envFile?: string;
   readonly globalLimiter: RateLimiter;
+  /** NTP offset tracking. Not started by default: long-running commands start it. */
+  readonly clockSync: ClockSync;
   private readonly accounts = new Map<string, AccountHandle>();
   private store?: Store;
 
@@ -95,6 +99,7 @@ export class Runtime {
     this.transport = init.transport;
     this.envFile = init.envFile;
     this.globalLimiter = new RateLimiter({ maxConcurrentRequests: init.config.policy.maxConcurrentRequests });
+    this.clockSync = new ClockSync({ ...init.config.app.clock, intervalMs: 15 * 60_000 }, init.logger);
   }
 
   static async load(
@@ -122,6 +127,7 @@ export class Runtime {
       for (const envName of Object.values(account.credentialEnv)) redactor.addSecret(process.env[envName]);
     }
     redactor.addSecret(process.env[config.notifications.discord.webhookEnv]);
+    redactor.addSecret(process.env[config.notifications.telegram.botTokenEnv]);
     for (const target of config.targets) redactor.addSecret(process.env[target.notifications.discord.webhookEnv]);
 
     const pools: Record<string, ProxyPoolConfig> = {};
@@ -232,36 +238,56 @@ export class Runtime {
   /** Notification routes for the given targets. Missing webhooks are warned about, never fatal. */
   buildNotifier(targets: ResolvedTarget[]): Notifier {
     const discord = this.config.notifications.discord;
-    const events: ReadonlySet<EventType> = new Set(discord.events ?? DEFAULT_NOTIFY_EVENTS);
+    const discordEvents: ReadonlySet<EventType> = new Set(discord.events ?? DEFAULT_NOTIFY_EVENTS);
+    const telegramEvents: ReadonlySet<EventType> = new Set(this.config.notifications.telegram.events ?? DEFAULT_NOTIFY_EVENTS);
     const channels = new Map<string, NotificationChannel>();
+    const telegram = this.telegramChannel();
     const routes = new Map<string, NotifierRoute>();
     for (const target of targets) {
+      const routeChannels: Array<{ channel: NotificationChannel; events: ReadonlySet<EventType> }> = [];
       const cfg = target.notifications.discord;
-      if (!cfg.enabled) {
-        routes.set(target.id, { channels: [], events });
-        continue;
+      if (cfg.enabled) {
+        const url = process.env[cfg.webhookEnv];
+        if (!url) {
+          this.logger.warn(`Discord is enabled for ${target.id} but ${cfg.webhookEnv} is not set; notifications will only be logged`);
+        } else {
+          let channel = channels.get(url);
+          if (!channel) {
+            channel = new DiscordChannel({
+              webhookUrl: url,
+              username: discord.username,
+              mentionRoleId: discord.mentionRoleId,
+              timeZone: this.config.app.timezone,
+              transport: this.transport,
+              proxy: this.config.proxies.enabled ? discord.proxy ?? this.config.proxies.defaultPool : undefined,
+            });
+            channels.set(url, channel);
+          }
+          routeChannels.push({ channel, events: discordEvents });
+        }
       }
-      const url = process.env[cfg.webhookEnv];
-      if (!url) {
-        this.logger.warn(`Discord is enabled for ${target.id} but ${cfg.webhookEnv} is not set; notifications will only be logged`);
-        routes.set(target.id, { channels: [], events });
-        continue;
-      }
-      let channel = channels.get(url);
-      if (!channel) {
-        channel = new DiscordChannel({
-          webhookUrl: url,
-          username: discord.username,
-          mentionRoleId: discord.mentionRoleId,
-          timeZone: this.config.app.timezone,
-          transport: this.transport,
-          proxy: this.config.proxies.enabled ? discord.proxy ?? this.config.proxies.defaultPool : undefined,
-        });
-        channels.set(url, channel);
-      }
-      routes.set(target.id, { channels: [channel], events });
+      if (telegram && target.notifications.telegram.enabled) routeChannels.push({ channel: telegram, events: telegramEvents });
+      routes.set(target.id, { channels: routeChannels });
     }
     return new Notifier(routes, this.logger);
+  }
+
+  /** Telegram channel when enabled and the bot token is present. */
+  telegramChannel(): TelegramChannel | undefined {
+    const tg = this.config.notifications.telegram;
+    const token = process.env[tg.botTokenEnv];
+    if (!tg.enabled || !tg.chatId) return undefined;
+    if (!token) {
+      this.logger.warn(`Telegram is enabled but ${tg.botTokenEnv} is not set; Telegram notifications are off`);
+      return undefined;
+    }
+    return new TelegramChannel({
+      botToken: token,
+      chatId: tg.chatId,
+      timeZone: this.config.app.timezone,
+      transport: this.transport,
+      proxy: this.config.proxies.enabled ? tg.proxy ?? this.config.proxies.defaultPool : undefined,
+    });
   }
 
   discordChannel(webhookEnv = this.config.notifications.discord.webhookEnv): DiscordChannel | undefined {
@@ -279,6 +305,7 @@ export class Runtime {
   }
 
   async close(): Promise<void> {
+    this.clockSync.stop();
     this.store?.close();
     await this.router.close();
   }

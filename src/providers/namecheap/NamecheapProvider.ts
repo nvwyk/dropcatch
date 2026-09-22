@@ -158,6 +158,11 @@ export const namecheapPlugin = definePlugin<NamecheapOptions>({
     const tldOf = (domain: string): string => domain.slice(domain.indexOf(".") + 1);
 
     return {
+      async warmup() {
+        // HEAD on the host root: no credentials sent, nothing counted against the API key.
+        await ctx.http({ method: "HEAD", url: `${new URL(base).origin}/`, timeoutMs: 3000, label: "namecheap.warmup" });
+      },
+
       async prepare(domain) {
         await tldPrice(tldOf(domain)).catch(() => undefined);
       },

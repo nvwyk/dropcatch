@@ -8,17 +8,44 @@ and a dry run against the exact TLD you care about.
 
 Generated from adapter metadata by `dropcatch providers` (this table mirrors it).
 
-| Capability | Porkbun | Namecheap | Cloudflare | RDAP |
-|---|:-:|:-:|:-:|:-:|
-| Availability check | Yes | Yes | Yes | Yes (registry data, advisory) |
-| Pricing in check | Yes | Premium only, standard via `users.getPricing` | Yes | No |
-| Registration | Yes | Yes | Yes (API beta, subset of TLDs) | No |
-| Server-side dry run | Yes (`dryRun: true`) | No | No | n/a |
-| Ownership lookup (ambiguity resolution) | Yes (`listAll`) | Yes (`domains.getList`) | Yes (`GET registrations/{domain}`) | n/a |
-| Async registration status | n/a | n/a | Yes (`registration-status`) | n/a |
-| Sandbox | Yes (`pk1_sb_` keys, same base URL) | Yes (`api.sandbox.namecheap.com`) | Yes (`registrar-sandbox`, com/net only) | n/a |
-| Premium registration via API | No | Yes (not enabled in v0.1) | Needs acknowledgements (not enabled in v0.1) | n/a |
-| Default limits used by dropcatch | 1 check/s, 1 create/s | 1 check/2s, 25/min | 1 check/s | 1 req/2s, 20/min |
+| Capability | OVHcloud | Porkbun | Namecheap | Cloudflare | RDAP |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Sells `.pl` | **Yes** (PL catalog) | No | Unverified | No | n/a |
+| Availability check | Yes (cart offers) | Yes | Yes | Yes | Yes (registry data, advisory) |
+| Pricing in check | Yes (net of VAT) | Yes | Premium only, standard via `users.getPricing` | Yes | No |
+| Registration | Yes | Yes | Yes | Yes (API beta, subset of TLDs) | No |
+| Server-side dry run | Yes (`GET .../checkout`) | Yes (`dryRun: true`) | No | No | n/a |
+| Ownership lookup (ambiguity resolution) | Yes (`GET /domain/{d}`) | Yes (`listAll`) | Yes (`domains.getList`) | Yes (`GET registrations/{domain}`) | n/a |
+| Async registration status | Yes (`/me/order/{id}/status`) | n/a | n/a | Yes (`registration-status`) | n/a |
+| Sandbox | No | Yes (`pk1_sb_` keys, same base URL) | Yes (`api.sandbox.namecheap.com`) | Yes (`registrar-sandbox`, com/net only) | n/a |
+| Premium registration via API | No (not enabled) | No | Yes (not enabled in v0.1) | Needs acknowledgements (not enabled in v0.1) | n/a |
+| Default limits used by dropcatch | 1 check/s | 1 check/s, 1 create/s | 1 check/2s, 25/min | 1 check/s | 1 req/2s, 20/min |
+
+## OVHcloud
+
+Sources: <https://docs.ovhcloud.com/en/guides/web-cloud/domains/api-domain-order>, the official
+[python-ovh](https://github.com/ovh/python-ovh) client (signing), and live probes on 2026-09-23.
+
+- **`.pl` is sold.** `GET /order/catalog/public/domain?ovhSubsidiary=PL` (public) lists plan codes `pl` and
+  `com.pl`; `.pl` first year was 16.69 PLN net (catalog value `1669000000` = 16.69 x 10^8), VAT 23% on top.
+- Endpoints: `https://eu.api.ovh.com/1.0` (also `ca.api.ovh.com`, `api.us.ovhcloud.com`).
+- Signing: headers `X-Ovh-Application`, `X-Ovh-Consumer`, `X-Ovh-Timestamp`, and
+  `X-Ovh-Signature = "$1$" + sha1(AS+"+"+CK+"+"+METHOD+"+"+fullUrl+"+"+body+"+"+timestamp)`, with the
+  timestamp taken from `GET /auth/time` (unauthenticated) plus the measured delta.
+- Availability: `GET /order/cart/{cartId}/domain?domain=...` returns offers; the `action: "create"` offer
+  with `orderable: true` means registrable. `pricingMode` containing `premium` marks premium names.
+  Requires an authenticated, assigned cart (verified: anonymous carts get `401 You must login first`).
+  dropcatch keeps a dedicated lookup cart that never holds items.
+- Order: `POST /order/cart/{id}/domain` -> `GET .../item/{itemId}/requiredConfiguration` ->
+  `POST .../configuration` for each (`OWNER_CONTACT` = `/me/contact/{id}`, `ADMIN_ACCOUNT`/`TECH_ACCOUNT`
+  = NIC handle, `OWNER_LEGAL_AGE`, and TLD-specific labels) -> `GET /order/cart/{id}/checkout`
+  (validation, no order) -> `POST /order/cart/{id}/checkout` with
+  `{ autoPayWithPreferredPaymentMethod, waiveRetractationPeriod }` which creates the order.
+- Delivery: `GET /me/order/{orderId}/status` (`delivered`, `delivering`, `notPaid`, `cancelled`, ...).
+- Safety in dropcatch: a separate buy cart; before the paid checkout it verifies that every line of the
+  validated order is this domain and that the net total is not above the price the gate approved.
+- No published API rate limits and no sandbox. Rehearse with `dryRun: true` (checkout preview only).
+- Required token rights: `GET/POST/DELETE /order/cart*`, `GET /me*`, `GET /domain/*`.
 
 ## Porkbun
 
@@ -74,4 +101,4 @@ Sources: <https://www.dns.pl/en/domain_name_life_cycle>, <https://www.dns.pl/en/
 - An unrenewed `.pl` domain enters a 30-day BLOCKED period, then returns to the pool of available names.
 - A domain deleted by its holder sits in DELETE_BLOCKED for 5 days.
 - NASK does not publish an exact release second, so a configured `expectedAt` is a scheduling hint. Keep a generous `postWindowSeconds`.
-- You need a registrar that sells `.pl` and has an API. None of the three built-in registrars is confirmed for `.pl`. Add one via the plugin interface (see README, "Adding a provider").
+- You need a registrar that sells `.pl` and has an API: OVHcloud (subsidiary PL) does, verified via its public catalog.

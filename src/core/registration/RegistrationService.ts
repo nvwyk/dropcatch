@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ResolvedTarget } from "../../config/loader.ts";
 import type { Logger } from "../../logging/logger.ts";
+import { observeCheck } from "../../observability/metrics.ts";
 import type { Store } from "../../persistence/Store.ts";
 import type { RateLimiter } from "../../providers/RateLimiter.ts";
 import type { AnyProviderPlugin, ProviderInstance } from "../../providers/types.ts";
@@ -106,6 +107,7 @@ export class RegistrationService {
       this.transition("VERIFYING", `final check via ${candidate.id}`);
       const check = await this.finalCheck(candidate, signal);
       finalChecks.push(check);
+      observeCheck(check);
       store.recordCheck(this.d.runId, check, "final");
       if (check.status !== "available") {
         this.d.logger.info(`Final check via ${candidate.id}: ${check.status}`, { reason: check.reason, errorCode: check.errorCode });

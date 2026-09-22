@@ -13,6 +13,11 @@ import { isValidTimeZone, parseInstant } from "../core/time.ts";
 import { intervalFor, phaseAt } from "../core/watcher/schedule.ts";
 import { normalizeDomain } from "../domain/normalize.ts";
 import { runCheck } from "../cli/commands/check.ts";
+import { existingTargets, importDefaults } from "../cli/commands/importCalendar.ts";
+import { applyImport, parseImport } from "../config/importTargets.ts";
+import { dropEntries, toIcs } from "../core/calendar.ts";
+import { TelegramChannel } from "../notifications/Telegram.ts";
+import { metricsAllowed, renderMetrics } from "../observability/metrics.ts";
 import { accountReports, pluginMatrix } from "../cli/commands/providers.ts";
 import { resolveTarget, type ResolveAs } from "../cli/commands/resolve.ts";
 import { VERSION } from "../version.ts";
@@ -197,7 +202,7 @@ function targetView(app: DashboardApp, t: ResolvedTarget, now: number): Record<s
   };
 }
 
-const SECRET_PREFIX = /^(PORKBUN|NAMECHEAP|CLOUDFLARE|DISCORD|DROPCATCH|PROXY)_[A-Z0-9_]+$/;
+const SECRET_PREFIX = /^(PORKBUN|NAMECHEAP|CLOUDFLARE|OVH|DISCORD|TELEGRAM|DROPCATCH|PROXY)_[A-Z0-9_]+$/;
 
 function secretCatalog(app: DashboardApp): Array<{ name: string; set: boolean; inFile: boolean; secret: boolean; usedBy: string[] }> {
   const rt = app.rt;
@@ -212,6 +217,7 @@ function secretCatalog(app: DashboardApp): Array<{ name: string; set: boolean; i
     for (const field of acct.plugin.credentials) add(acct.credentialEnv[field.name]!, `${acct.id}: ${field.description}`, field.secret);
   }
   add(rt.config.notifications.discord.webhookEnv, "Discord webhook", true);
+  add(rt.config.notifications.telegram.botTokenEnv, "Telegram bot token", true);
   for (const t of rt.config.targets) {
     if (t.notifications.discord.webhookEnv !== rt.config.notifications.discord.webhookEnv) add(t.notifications.discord.webhookEnv, `${t.id}: Discord webhook`, true);
   }
@@ -334,7 +340,70 @@ route("GET", "/api/overview", true, (ctx) => {
     confirmations: app.confirmations.list(),
     notifications: { sent: app.notifier.sent, failed: app.notifier.failed },
     checks24h: app.store.checkCount(new Date(now - 86_400_000).toISOString()),
+    clock: { ...rt.clockSync.status(), warnMs: rt.config.app.clock.warnMs, enabled: rt.config.app.clock.ntp },
   };
+});
+
+route("GET", "/api/targets/:id/latency", true, (ctx) => {
+  const t = ctx.app.rt.config.targets.find((x) => x.id === ctx.params.id);
+  if (!t) throw new HttpError(404, "Unknown target");
+  return { series: ctx.app.store.latencySeries(t.domain.ascii, 600) };
+});
+
+route("GET", "/api/calendar", true, (ctx) => ({
+  now: Date.now(),
+  timezone: ctx.app.rt.config.app.timezone,
+  entries: dropEntries(ctx.app.rt.config.targets).map((e) => ({
+    ...e,
+    state: ctx.app.store.getState(e.id)?.state ?? "IDLE",
+    watching: ctx.app.watches.isRunning(e.id),
+  })),
+}));
+
+route("GET", "/api/calendar.ics", true, (ctx) => {
+  ctx.res.writeHead(200, {
+    ...SECURITY_HEADERS,
+    "content-type": "text/calendar; charset=utf-8",
+    "content-disposition": 'attachment; filename="dropcatch-drops.ics"',
+    "cache-control": "no-store",
+  });
+  ctx.res.end(toIcs(dropEntries(ctx.app.rt.config.targets)));
+  return STREAMING;
+});
+
+route("POST", "/api/import", true, async (ctx) => {
+  const app = ctx.app;
+  if (!app.configFile.exists()) throw new HttpError(409, "Create a config first (quick setup), then import targets.");
+  const text = str(ctx.body.text) ?? "";
+  if (!text.trim()) throw new HttpError(400, "Paste some domains or choose a file.", { field: "text" });
+  const d = (ctx.body.defaults ?? {}) as Record<string, unknown>;
+  const defaults = importDefaults(app.rt, {
+    mode: str(d.mode),
+    maxPrice: d.maxPrice === undefined || d.maxPrice === "" ? undefined : String(d.maxPrice),
+    currency: str(d.currency) || undefined,
+    registrar: Array.isArray(d.registrars) ? (d.registrars as string[]) : undefined,
+    timezone: str(d.timezone) || undefined,
+  });
+  const rows = parseImport(text, defaults, existingTargets(app.rt), ctx.body.update === true);
+  const counts = { create: 0, update: 0, skip: 0, error: 0 };
+  for (const r of rows) counts[r.action]++;
+  if (ctx.body.apply !== true || counts.error || counts.create + counts.update === 0) return { applied: false, counts, rows };
+  const result = await saveAndReload(app, applyImport(app.configFile, rows));
+  return { applied: true, counts, rows, ...result };
+});
+
+route("POST", "/api/telegram/test", true, async (ctx) => {
+  const channel = ctx.app.rt.telegramChannel();
+  if (!channel) throw new HttpError(400, "Turn Telegram on, set a chat id and the bot token first.");
+  await withTimeout(channel.sendText("dropcatch test message from the dashboard. Notifications are working."), 20_000);
+  return { ok: true };
+});
+
+route("GET", "/api/telegram/chats", true, async (ctx) => {
+  const env = ctx.app.rt.config.notifications.telegram.botTokenEnv;
+  const token = process.env[env];
+  if (!token) throw new HttpError(400, `${env} is not set. Save the bot token first.`);
+  return { chats: await TelegramChannel.recentChats(ctx.app.rt.transport, token) };
 });
 
 route("GET", "/api/targets/:id", true, (ctx) => {
@@ -470,19 +539,23 @@ route("POST", "/api/config/quickstart", true, async (ctx) => {
       throw new HttpError(400, (err as Error).message, { field: "expectedAt" });
     }
   }
-  const registrars = (Array.isArray(b.registrars) ? b.registrars : []).filter((r): r is RegistrarChoice => r === "porkbun" || r === "namecheap" || r === "cloudflare");
+  const registrars = (Array.isArray(b.registrars) ? b.registrars : []).filter((r): r is RegistrarChoice => ["porkbun", "namecheap", "cloudflare", "ovh"].includes(r as string));
   const mode = b.mode === "confirm" || b.mode === "auto-buy" ? b.mode : "notify-only";
   const max = Number(b.maxPrice);
   if (mode !== "notify-only" && !(max > 0)) throw new HttpError(400, "Set a maximum price for confirm or auto-buy mode.", { field: "maxPrice" });
   if (mode !== "notify-only" && registrars.includes("namecheap")) {
     throw new HttpError(400, "Namecheap registration needs contact details. Start with notify-only, then add them under Providers.", { field: "registrars" });
   }
+  if (mode !== "notify-only" && registrars.includes("ovh") && !str(b.ovhOwnerContact)) {
+    throw new HttpError(400, "OVHcloud registration needs your owner contact id (OVH manager > contacts).", { field: "ovhOwnerContact" });
+  }
   const text = renderConfig({
     timezone,
     target: { id: domain.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), domain, expectedAt, strategy: "adaptive" },
     registrars,
     mode,
-    budget: mode === "notify-only" ? undefined : { max, currency: (str(b.currency) ?? "USD").toUpperCase() },
+    budget: mode === "notify-only" ? undefined : { max, currency: (str(b.currency) ?? (registrars.includes("ovh") ? "PLN" : "USD")).toUpperCase() },
+    ovhOwnerContact: str(b.ovhOwnerContact),
     discord: b.discord !== false,
   });
   return saveAndReload(app, text);
@@ -546,9 +619,19 @@ route("PATCH", "/api/config/app", true, async (ctx) => {
 });
 
 route("PATCH", "/api/config/notifications", true, async (ctx) => {
-  const discord = ctx.body.discord;
-  if (!discord || typeof discord !== "object") throw new HttpError(400, "discord settings are required");
-  return saveAndReload(ctx.app, ctx.app.configFile.merge(["notifications", "discord"], discord as Record<string, unknown>));
+  const { discord, telegram } = ctx.body as { discord?: unknown; telegram?: unknown };
+  if ((!discord || typeof discord !== "object") && (!telegram || typeof telegram !== "object")) throw new HttpError(400, "discord or telegram settings are required");
+  const text = ctx.app.configFile.edit((doc) => {
+    for (const [channel, patch] of [["discord", discord], ["telegram", telegram]] as const) {
+      if (!patch || typeof patch !== "object") continue;
+      for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
+        if (value === undefined) continue;
+        if (value === null || value === "") doc.deleteIn(["notifications", channel, key]);
+        else doc.setIn(["notifications", channel, key], doc.createNode(value));
+      }
+    }
+  });
+  return saveAndReload(ctx.app, text);
 });
 
 route("GET", "/api/secrets", true, (ctx) => ({ envPath: ctx.app.envPath, secrets: secretCatalog(ctx.app) }));
@@ -601,6 +684,22 @@ export function createDashboardServer(app: DashboardApp, opts: ServerOptions): S
     const forwardedProto = opts.trustProxy ? String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim() : undefined;
     const secure = forwardedProto === "https";
     const ip = (opts.trustProxy ? String(req.headers["x-forwarded-for"] ?? "").split(",")[0]?.trim() : "") || req.socket.remoteAddress || "unknown";
+
+    if (url.pathname === "/healthz") {
+      send(res, 200, { status: "ok", version: VERSION, uptimeSeconds: Math.round((Date.now() - app.startedAt) / 1000) });
+      return;
+    }
+    if (url.pathname === "/metrics") {
+      const cookie = parseCookies(req.headers.cookie)[COOKIE];
+      const hasSession = Boolean(cookie) && app.store.touchSession(tokenHash(cookie!), Date.now() + app.rt.config.dashboard.sessionHours * 3_600_000);
+      if (!metricsAllowed(req.socket.remoteAddress, req.headers.authorization, process.env.DROPCATCH_METRICS_TOKEN, hasSession)) {
+        res.writeHead(401, { ...SECURITY_HEADERS, "www-authenticate": "Bearer" }).end("unauthorized");
+        return;
+      }
+      res.writeHead(200, { ...SECURITY_HEADERS, "content-type": "text/plain; version=0.0.4; charset=utf-8", "cache-control": "no-store" });
+      res.end(renderMetrics(VERSION));
+      return;
+    }
 
     if (!url.pathname.startsWith("/api/")) {
       if (req.method !== "GET" && req.method !== "HEAD") {

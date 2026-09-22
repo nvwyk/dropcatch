@@ -2,6 +2,7 @@ import { withTimeout } from "../../core/clock.ts";
 import { ConfigError } from "../../core/errors.ts";
 import { formatInstant } from "../../core/time.ts";
 import { normalizeDomain } from "../../domain/normalize.ts";
+import { TelegramChannel } from "../../notifications/Telegram.ts";
 import { bad, good, kv, out, printJson } from "../output.ts";
 import type { Runtime } from "../runtime.ts";
 
@@ -23,6 +24,34 @@ export async function testDiscord(rt: Runtime, opts: { json?: boolean; target?: 
   }
   if (opts.json) printJson({ ok: true });
   else out(good("Discord test message delivered successfully."));
+  return 0;
+}
+
+export async function testTelegram(rt: Runtime, opts: { json?: boolean; chats?: boolean }): Promise<number> {
+  const tg = rt.config.notifications.telegram;
+  const token = process.env[tg.botTokenEnv];
+  if (!token) throw new ConfigError(`${tg.botTokenEnv} is not set. Create a bot with @BotFather and put its token in that variable (or .env).`);
+  if (opts.chats) {
+    const chats = await TelegramChannel.recentChats(rt.transport, token);
+    if (opts.json) printJson(chats);
+    else if (!chats.length) out("No chats yet. Send any message to your bot (or add it to a group), then run this again.");
+    else {
+      out("Chats that recently messaged the bot (put one in notifications.telegram.chatId):");
+      for (const c of chats) kv(String(c.id), `${c.type ?? ""} ${c.title ?? c.username ?? c.first_name ?? ""}`.trim());
+    }
+    return 0;
+  }
+  const channel = rt.telegramChannel();
+  if (!channel) throw new ConfigError("Telegram is not enabled: set notifications.telegram.enabled: true and notifications.telegram.chatId");
+  try {
+    await channel.sendText(`dropcatch test message sent at ${formatInstant(Date.now(), rt.config.app.timezone, { withDate: true, withZone: true })}. Notifications are working.`);
+  } catch (err) {
+    if (opts.json) printJson({ ok: false, error: (err as Error).message });
+    else out(bad(`Telegram test failed: ${(err as Error).message}`));
+    return 1;
+  }
+  if (opts.json) printJson({ ok: true });
+  else out(good("Telegram test message delivered successfully."));
   return 0;
 }
 

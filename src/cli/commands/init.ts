@@ -10,10 +10,11 @@ import { builtinRegistry } from "../../providers/ProviderRegistry.ts";
 import { porkbunPlugin } from "../../providers/porkbun/PorkbunProvider.ts";
 import { namecheapPlugin } from "../../providers/namecheap/NamecheapProvider.ts";
 import { cloudflarePlugin } from "../../providers/cloudflare/CloudflareProvider.ts";
+import { ovhPlugin } from "../../providers/ovh/OvhProvider.ts";
 import { bold, dim, good, out, warn } from "../output.ts";
 import { isInteractive, Prompter } from "../prompt.ts";
 
-const PLUGINS = { porkbun: porkbunPlugin, namecheap: namecheapPlugin, cloudflare: cloudflarePlugin } as const;
+const PLUGINS = { porkbun: porkbunPlugin, namecheap: namecheapPlugin, cloudflare: cloudflarePlugin, ovh: ovhPlugin } as const;
 
 export async function initCommand(opts: { config?: string; force?: boolean }): Promise<number> {
   if (!isInteractive()) {
@@ -71,7 +72,7 @@ export async function initCommand(opts: { config?: string; force?: boolean }): P
 
     // 6. registrars
     const registrars: RegistrarChoice[] = [];
-    const picked = await p.ask("6. Registrar accounts to use (porkbun, namecheap, cloudflare; comma separated, blank = RDAP only)");
+    const picked = await p.ask("6. Registrar accounts to use (ovh, porkbun, namecheap, cloudflare; comma separated, blank = RDAP only; ovh sells .pl)");
     for (const name of picked.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) {
       if (name in PLUGINS && !registrars.includes(name as RegistrarChoice)) registrars.push(name as RegistrarChoice);
       else out(warn(`Ignoring unknown registrar "${name}"`));
@@ -101,7 +102,7 @@ export async function initCommand(opts: { config?: string; force?: boolean }): P
       for (;;) {
         const max = Number(await p.ask("10. Maximum price you will pay", "20"));
         if (Number.isFinite(max) && max > 0) {
-          budget = { max, currency: (await p.ask("    Currency", "USD")).toUpperCase() };
+          budget = { max, currency: (await p.ask("    Currency", registrars.includes("ovh") ? "PLN" : "USD")).toUpperCase() };
           break;
         }
         out(warn("Enter a positive number"));
@@ -124,6 +125,11 @@ export async function initCommand(opts: { config?: string; force?: boolean }): P
       };
     }
 
+    let ovhOwnerContact: string | undefined;
+    if (mode !== "notify-only" && registrars.includes("ovh")) {
+      ovhOwnerContact = (await p.ask("   OVH owner contact id (OVH manager > contacts, or GET /me/contact)")) || undefined;
+    }
+
     const text = renderConfig({
       timezone,
       target: { id: domain.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), domain, expectedAt, strategy },
@@ -131,6 +137,7 @@ export async function initCommand(opts: { config?: string; force?: boolean }): P
       mode,
       budget,
       namecheapContact,
+      ovhOwnerContact,
       discord: true,
     });
     // Validate before writing, so init never produces a broken config.

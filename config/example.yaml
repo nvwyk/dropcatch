@@ -15,6 +15,10 @@ app:
   logLevel: info                   # trace | debug | info | warn | error
   logFormat: pretty                # pretty | json
   dryRun: true                     # nothing is ever purchased until you set this to false
+  clock:
+    ntp: true                      # measure the system clock against NTP
+    correct: true                  # schedule drops on NTP time if this machine is off
+    warnMs: 500
 
 policy:
   respectProviderLimits: true      # enforce each provider's documented rate limits
@@ -32,6 +36,20 @@ rdap:
 
 # Registrar accounts. Several accounts per registrar are fine (e.g. porkbun-main, porkbun-backup).
 accounts:
+  ovh-main:                        # OVHcloud Poland sells .pl and .com.pl (prices in PLN, net of VAT)
+    provider: ovh
+    credentials:
+      applicationKey: OVH_APPLICATION_KEY
+      applicationSecret: OVH_APPLICATION_SECRET
+      consumerKey: OVH_CONSUMER_KEY
+    options:
+      endpoint: ovh-eu
+      ovhSubsidiary: PL
+      ownerContact: 12345          # id of your owner contact (OVH manager > contacts); required to register
+      autoPay: true                # pay with the default payment method
+      # acceptConditions: true     # answer ACCEPT_CONDITIONS when a TLD requires it
+      # extraConfiguration: { SOME_LABEL: value }
+
   porkbun-main:
     provider: porkbun
     environment: production        # sandbox = pk1_sb_ keys (fake money)
@@ -90,6 +108,10 @@ notifications:
     username: dropcatch
     # mentionRoleId: "123456789012345678"   # pinged on detections and purchases only
     # events: [availability_detected, registration_succeeded, registration_failed, registration_ambiguous]
+  telegram:
+    enabled: false                 # true once TELEGRAM_BOT_TOKEN and chatId are set
+    botTokenEnv: TELEGRAM_BOT_TOKEN
+    # chatId: "123456789"          # dropcatch test telegram --chats shows it
 
 dashboard:
   host: 127.0.0.1                  # 0.0.0.0 (or --public) exposes it; put HTTPS in front
@@ -135,8 +157,8 @@ targets:
       discord:
         enabled: true
 
-  # A .pl name. Porkbun does not sell .pl, so this one only notifies. NASK RDAP lags the
-  # registry by up to 15 minutes; add an API registrar that sells .pl via a plugin for real speed.
+  # A .pl name bought through OVHcloud. NASK RDAP lags the registry by up to 15 minutes,
+  # so OVH is the real-time source here; RDAP only adds an early hint.
   - id: sklep-pl
     domain: sklep-przyklad.pl
     drop:
@@ -145,7 +167,11 @@ targets:
       preWindowSeconds: 900
       postWindowSeconds: 3600
     availability:
-      providers: [rdap]
+      providers: [ovh-main, rdap]
     registration:
-      enabled: false
-      mode: notify-only
+      enabled: true
+      mode: confirm
+      providers: [ovh-main]
+      budget:
+        maxRegistrationPrice: 30
+        currency: PLN

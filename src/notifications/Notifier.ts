@@ -2,6 +2,7 @@ import { sleep } from "../core/clock.ts";
 import type { DropEvent, EventSink, EventType } from "../core/events.ts";
 import type { Logger } from "../logging/logger.ts";
 import type { Store } from "../persistence/Store.ts";
+import { observeEvent, observeNotification } from "../observability/metrics.ts";
 import { parseJson, type HttpTransport } from "../transport/HttpTransport.ts";
 import { describeEvent, discordPayload } from "./format.ts";
 
@@ -94,8 +95,7 @@ const DEDUP_WINDOW_MS = 5 * 60_000;
 const MAX_QUEUE = 200;
 
 export interface NotifierRoute {
-  channels: NotificationChannel[];
-  events: ReadonlySet<EventType>;
+  channels: Array<{ channel: NotificationChannel; events: ReadonlySet<EventType> }>;
 }
 
 /**
@@ -118,14 +118,15 @@ export class Notifier {
 
   enqueue(event: DropEvent): void {
     const route = this.routes.get(event.targetId);
-    if (!route || !route.events.has(event.type)) return;
+    if (!route) return;
     if (DEDUP.has(event.type)) {
       const key = `${event.targetId}|${event.type}|${String(event.data.provider)}|${String(event.data.errorCode)}`;
       const last = this.lastSent.get(key);
       if (last !== undefined && event.at - last < DEDUP_WINDOW_MS) return;
       this.lastSent.set(key, event.at);
     }
-    for (const channel of route.channels) {
+    for (const { channel, events } of route.channels) {
+      if (!events.has(event.type)) continue;
       if (this.queue.length >= MAX_QUEUE) {
         const dropIndex = this.queue.findIndex((q) => !CRITICAL.has(q.event.type));
         if (dropIndex === -1 && !CRITICAL.has(event.type)) continue;
@@ -144,8 +145,10 @@ export class Notifier {
       try {
         await job.channel.send(job.event);
         this.sent++;
+        observeNotification(job.channel.id, true);
       } catch (err) {
         this.failed++;
+        observeNotification(job.channel.id, false);
         this.logger.warn(`Notification via ${job.channel.id} failed: ${(err as Error).message}`, { event: job.event.type });
       }
     }
@@ -181,6 +184,7 @@ export class EventPublisher implements EventSink {
 
   emit(input: Omit<DropEvent, "at"> & { at?: number }): void {
     const event: DropEvent = { ...input, at: input.at ?? Date.now() };
+    observeEvent(event);
     try {
       this.store?.recordEvent(event);
     } catch (err) {

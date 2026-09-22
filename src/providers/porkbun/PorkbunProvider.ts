@@ -168,6 +168,11 @@ export const porkbunPlugin = definePlugin<PorkbunOptions>({
     }
 
     return {
+      async warmup() {
+        // Unauthenticated and not rate limited: keeps the TLS connection open for the purchase.
+        await ctx.http({ method: "GET", url: `${base}/ip`, timeoutMs: 3000, label: "porkbun.warmup" });
+      },
+
       async check(req) {
         const meta = startCall(ctx.accountId, "porkbun", req.domain, ctx.now());
         try {

@@ -8,8 +8,9 @@ import { Store as SqliteStore } from "../persistence/Store.ts";
 import { describeEvent } from "../notifications/format.ts";
 import { EventPublisher, type Notifier } from "../notifications/Notifier.ts";
 import { Runtime, type GlobalOptions } from "../cli/runtime.ts";
+import { setWatchesRunning } from "../observability/metrics.ts";
 import { newToken } from "./auth.ts";
-import { ConfigFile } from "./ConfigFile.ts";
+import { ConfigFile } from "../config/ConfigFile.ts";
 import { WatchManager, WebConfirmations } from "./WatchManager.ts";
 
 /** Server-sent events to every open dashboard tab. */
@@ -72,7 +73,10 @@ export class DashboardApp {
     this.configFile = new ConfigFile(configPath);
     this.envPath = rt.envFile ?? join(dirname(configPath), ".env");
     this.store = new SqliteStore(rt.config.app.databasePath, rt.redactor);
-    this.watches = new WatchManager(() => this.bus.publish("watch", { running: this.watches.runningIds() }));
+    this.watches = new WatchManager(() => {
+      setWatchesRunning(this.watches.runningIds().length);
+      this.bus.publish("watch", { running: this.watches.runningIds() });
+    });
     this.confirmations = new WebConfirmations(() => this.bus.publish("confirmation", this.confirmations.list()));
     this.notifier = rt.buildNotifier(rt.config.targets);
     const app = this;
@@ -92,6 +96,7 @@ export class DashboardApp {
   static async create(globals: GlobalOptions): Promise<DashboardApp> {
     const configPath = findConfigFile(globals.config) ?? resolve("config.yaml");
     const { rt, error } = await DashboardApp.loadRuntime(globals);
+    await rt.clockSync.start();
     return new DashboardApp(globals, rt, error, configPath);
   }
 
@@ -110,6 +115,7 @@ export class DashboardApp {
   /** Re-read config and environment. Running watches keep the settings they started with. */
   async reload(): Promise<void> {
     const { rt, error } = await DashboardApp.loadRuntime(this.globals);
+    await rt.clockSync.start();
     const previous = this.rt;
     this.rt = rt;
     this.configError = error;

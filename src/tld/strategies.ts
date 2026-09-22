@@ -41,6 +41,8 @@ const genericStrategy: TldStrategy = {
 
 /** Registrars verified (2026-09-22) NOT to sell .pl through their API. */
 const KNOWN_NO_PL = new Set(["porkbun"]);
+/** Registrars verified to sell .pl: OVHcloud (public catalog, subsidiary PL, 2026-09-23). */
+const KNOWN_PL = new Set(["ovh"]);
 
 const plStrategy: TldStrategy = {
   id: "pl",
@@ -59,7 +61,7 @@ const plStrategy: TldStrategy = {
     const registrars = t.availabilitySourceTypes.filter((s) => s !== "rdap" && s !== "mock");
     if (registrars.length === 0) {
       warnings.push(
-        `${t.domain.ascii}: only RDAP is watching this .pl name. NASK RDAP lags up to 15 minutes, so detection can be very late. Add a registrar availability source that sells .pl.`,
+        `${t.domain.ascii}: no real registrar is checking this .pl name (only RDAP or mocks). NASK RDAP lags up to 15 minutes, so detection can be very late. Add a registrar source that sells .pl (for example an OVHcloud account).`,
       );
     }
     if (t.quorumMode === "registry-confirmed") {
@@ -71,6 +73,9 @@ const plStrategy: TldStrategy = {
       if (KNOWN_NO_PL.has(provider)) {
         warnings.push(`${t.domain.ascii}: ${provider} does not sell .pl (verified 2026-09-22). Registration through it will fail.`);
       }
+    }
+    if (t.registrationActive && t.registrationProviderTypes.length && !t.registrationProviderTypes.some((p) => KNOWN_PL.has(p) || p === "mock")) {
+      warnings.push(`${t.domain.ascii}: none of the registrars for this target is known to sell .pl. OVHcloud does.`);
     }
     if (t.postWindowSeconds !== undefined && t.postWindowSeconds < 900) {
       warnings.push(

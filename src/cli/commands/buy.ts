@@ -78,7 +78,10 @@ export async function buyCommand(rt: Runtime, input: string, opts: BuyOptions): 
       providers,
       budget,
     },
-    notifications: base?.notifications ?? { discord: { enabled: true, webhookEnv: rt.config.notifications.discord.webhookEnv } },
+    notifications: base?.notifications ?? {
+      discord: { enabled: true, webhookEnv: rt.config.notifications.discord.webhookEnv },
+      telegram: { enabled: true },
+    },
   };
 
   const store = rt.openStore();

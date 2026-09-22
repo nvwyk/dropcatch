@@ -8,6 +8,7 @@ registers it through a registrar API. The purchase path has a hard budget gate a
 protection that survives crashes, and it keeps a full SQLite audit trail.
 
 It ships as a CLI and as an all-in-one web dashboard with first-run setup and password login.
+`.pl` and `.com.pl` can be bought automatically through OVHcloud.
 
 ```text
 known drop time -> adaptive watcher -> multiple sources -> final registrar check -> budget gate
@@ -27,10 +28,13 @@ known drop time -> adaptive watcher -> multiple sources -> final registrar check
 - [Dashboard](#dashboard)
 - [Configuration](#configuration)
 - [Getting credentials](#getting-credentials)
-- [Discord](#discord)
+- [Discord and Telegram](#discord-and-telegram)
 - [Dry run, watch and auto-buy](#dry-run-watch-and-auto-buy)
 - [How purchases stay safe](#how-purchases-stay-safe)
 - [Rate limits and proxies](#rate-limits-and-proxies)
+- [Bulk import and calendar](#bulk-import-and-calendar)
+- [Clock accuracy and latency](#clock-accuracy-and-latency)
+- [Metrics and health](#metrics-and-health)
 - [CLI reference](#cli-reference)
 - [Deployment](#deployment)
 - [Security](#security)
@@ -51,7 +55,11 @@ known drop time -> adaptive watcher -> multiple sources -> final registrar check
 - **Duplicate protection.** A persisted state machine, a compare-and-set lock in SQLite, an attempt
   record written before the request is sent, and an `AMBIGUOUS` state that blocks everything after an
   unclear result.
-- **Discord.** Non-blocking queue with retries. It never delays a purchase and never includes secrets.
+- **Discord and Telegram.** Non-blocking queue with retries. Never delays a purchase, never includes secrets.
+  On Telegram only detections and purchases ring; everything else arrives silently.
+- **Clock correction.** Measures the machine against NTP and schedules drops on true time.
+- **Monitoring.** Prometheus `/metrics`, `/healthz`, and per-source response-time charts in the dashboard.
+- **Bulk import and calendar.** Paste or upload many domains at once, see every drop on a calendar, export `.ics`.
 - **Dashboard.** Setup wizard, live overview with schedule timelines, target editor, secrets manager,
   provider tests, audit log and confirm-mode approvals.
 - **Audit trail.** Every check, event and attempt goes to SQLite, with provider latency stats.
@@ -62,6 +70,7 @@ known drop time -> adaptive watcher -> multiple sources -> final registrar check
 | | Availability | Registration | Server-side dry run | Sandbox | Notes |
 |---|:-:|:-:|:-:|:-:|---|
 | RDAP | yes | no | n/a | n/a | Registry data. `.pl` (NASK) lags up to 15 min, so treated as advisory |
+| **OVHcloud** | yes | yes | yes (checkout preview) | no | **Sells `.pl` and `.com.pl`** (PLN, net of VAT). Cart based, pays with your default payment method |
 | Porkbun | yes | yes | yes | yes (`pk1_sb_` keys) | Exact-cost guard. No premium via API. **Does not sell `.pl`** |
 | Namecheap | yes | yes | no | yes | Whitelisted client IP required. Contact details needed to register |
 | Cloudflare | yes | yes | no | yes (com/net) | API beta, subset of TLDs, non-refundable |
@@ -116,10 +125,13 @@ What it covers:
   feed and source latency.
 - **Targets.** Create, edit and delete targets, start and stop watches, and settle `AMBIGUOUS` or
   `PENDING` results.
+- **Calendar.** Month view and agenda of every drop window, with `.ics` export.
+- **Import.** Paste or upload many domains (plain lines or CSV), preview the result, then import.
 - **Check.** One-off availability check across all sources.
 - **Providers.** Add registrar accounts, set API keys (written to `.env` with mode 600, never shown
   again), test connectivity, view the capability matrix.
-- **Notifications.** Discord webhook, bot name, role mention and event filter, plus a test button.
+- **Notifications.** Discord webhook and Telegram bot (with chat discovery), event filters and test buttons.
+- **Response time.** Per-source latency charts on each target, with the clock offset on the overview.
 - **Activity.** Full event log and purchase attempts.
 - **Settings.** Timezone, profile, the dry-run switch (going live requires typing `GO LIVE`), password
   change, sign out other sessions, and a raw YAML editor with validation.
@@ -192,12 +204,40 @@ yet is skipped for that tick rather than queued.
 
 NASK publishes no exact release second (expired names sit 30 days in BLOCKED, then return to the pool),
 and its RDAP data lags the registry by up to 15 minutes. So for `.pl`, treat `expectedAt` as a hint and
-keep a long `postWindowSeconds`. RDAP gives an early signal but never proof, and you need a registrar
-that sells `.pl` through an API. None of the built-in registrars is confirmed for `.pl` (Porkbun
-verifiably is not), so add one as a [plugin](#adding-a-provider).
+keep a long `postWindowSeconds`. RDAP gives an early signal but never proof. Use an **OVHcloud** account
+as both an availability source and the registrar (OVHcloud Poland sells `.pl` and `.com.pl`; Porkbun
+does not):
+
+```yaml
+accounts:
+  ovh-main:
+    provider: ovh
+    options: { endpoint: ovh-eu, ovhSubsidiary: PL, ownerContact: 12345 }
+targets:
+  - id: sklep-pl
+    domain: sklep-przyklad.pl
+    drop: { expectedAt: "2026-10-05 10:00", timezone: Europe/Warsaw, postWindowSeconds: 3600 }
+    availability: { providers: [ovh-main, rdap] }
+    registration:
+      enabled: true
+      mode: auto-buy
+      providers: [ovh-main]
+      budget: { maxRegistrationPrice: 30, currency: PLN }   # OVH prices are net of VAT
+```
+
+The OVH purchase builds an order in a dedicated cart, fills the required contacts, lets OVH validate
+it, checks that the cart holds only this domain and that the net total does not exceed the verified
+price, and only then places the paid checkout. Every step before that final call is a confirmed
+failure (no order exists), so falling back to another registrar stays safe.
 
 ## Getting credentials
 
+- **OVHcloud (for `.pl`):** create a token at [eu.api.ovh.com/createToken](https://eu.api.ovh.com/createToken/)
+  with rights `GET/POST/DELETE /order/cart*`, `GET /me*`, `GET /domain/*`. That gives the application key,
+  application secret and consumer key (`OVH_APPLICATION_KEY`, `OVH_APPLICATION_SECRET`, `OVH_CONSUMER_KEY`).
+  To register, also set `options.ownerContact` (the id of an owner contact from the OVH manager, or `GET /me/contact`)
+  and make sure a default payment method is saved. Rehearse with dry run: OVH validates the whole order
+  (`GET /order/cart/{id}/checkout`) without placing it.
 - **Porkbun:** [porkbun.com/account/api](https://porkbun.com/account/api). Create a key pair and enable
   API access. Registration via API requires a verified email and phone, account credit and one earlier
   registration. For rehearsals, create a sandbox pair (`pk1_sb_...`) and set `environment: sandbox`.
@@ -205,10 +245,27 @@ verifiably is not), so add one as a [plugin](#adding-a-provider).
   as `NAMECHEAP_CLIENT_IP`. Use `environment: sandbox` with a sandbox account first.
 - **Cloudflare:** create an API token with Registrar write permission and note your account ID.
 - **Discord:** Server Settings > Integrations > Webhooks > New Webhook > Copy URL.
+- **Telegram:** talk to [@BotFather](https://t.me/BotFather), `/newbot`, copy the token into `TELEGRAM_BOT_TOKEN`.
+  Send your bot any message, then `dropcatch test telegram --chats` (or "Find my chat" in the dashboard) shows the chat id.
 
-## Discord
+## Discord and Telegram
 
-Set `DISCORD_WEBHOOK_URL` and run `dropcatch test discord`. Events are delivered by a background queue.
+Set `DISCORD_WEBHOOK_URL` and run `dropcatch test discord`. For Telegram:
+
+```yaml
+notifications:
+  telegram:
+    enabled: true
+    botTokenEnv: TELEGRAM_BOT_TOKEN
+    chatId: "123456789"         # or -100... for a group, or @channelname
+```
+
+Then `dropcatch test telegram`. Both channels are delivered by the same background queue.
+Discord 429 and 5xx responses are retried, repeated provider errors are collapsed for 5 minutes, and a
+failing channel never slows down a purchase. Per target, `notifications.discord.enabled` and
+`notifications.telegram.enabled` switch channels off.
+
+For Discord alone: Events are delivered by a background queue.
 Discord 429 and 5xx responses are retried, repeated provider errors are collapsed for 5 minutes, and a
 failing webhook never slows down a purchase. `notifications.discord.events` limits what is sent, and
 `mentionRoleId` pings one role on detections and purchases.
@@ -305,6 +362,48 @@ accounts:
     proxy: office                      # or "direct"
 ```
 
+## Bulk import and calendar
+
+```bash
+dropcatch import drops.csv --dry-run               # preview; nothing written
+dropcatch import drops.csv --mode auto-buy --max-price 30 -r ovh-main
+dropcatch calendar --days 60                       # agenda of upcoming drop windows
+dropcatch calendar --ics drops.ics                 # subscribe-able iCalendar file (15 min reminders)
+```
+
+The import accepts one `domain [drop time]` per line, or a CSV (comma, semicolon or tab) with a
+`domain` column and optional `expectedAt`/`drop`, `timezone`, `mode`, `maxPrice`/`budget`, `currency`,
+`registrars`, `sources`, `id`. Rows are validated one by one, then the whole config is validated again;
+if anything is wrong nothing is written. Existing targets are skipped unless `--update`. The dashboard
+has the same import (with a preview table) on the Overview, and a Calendar page with an `.ics` export.
+
+## Clock accuracy and latency
+
+A drop at 12:00:00 only helps if this machine knows when 12:00:00 is. dropcatch queries NTP
+(`time.cloudflare.com`, `pool.ntp.org`, `time.google.com`) at start and every 15 minutes, and with
+`app.clock.correct: true` (the default) it schedules ticks on NTP time. Offsets over 10 minutes are
+reported but never applied: fix the system clock then. `dropcatch check` and the dashboard show the offset.
+
+```yaml
+app:
+  clock: { ntp: true, correct: true, warnMs: 500 }
+```
+
+Registrar accounts that are only used to buy (not polled) are kept warm near the drop with a cheap
+unauthenticated request every 15 s, so the final check and the purchase skip the TLS handshake. The
+dashboard shows response time per source on each target (hover or use the arrow keys for values).
+
+## Metrics and health
+
+- Dashboard: `GET /healthz` (no auth) and `GET /metrics` (Prometheus text format).
+- Headless: `dropcatch watch --metrics-port 9464` serves the same two endpoints on 127.0.0.1.
+
+`/metrics` answers loopback clients and signed-in dashboard sessions. Remote scrapers need
+`Authorization: Bearer $DROPCATCH_METRICS_TOKEN`. Series include `dropcatch_availability_checks_total`,
+`dropcatch_provider_latency_ms` (histogram), `dropcatch_provider_rate_limits_total`,
+`dropcatch_registration_attempts_total`, `dropcatch_registrations_total{outcome}`,
+`dropcatch_notifications_total`, `dropcatch_watches_running` and `dropcatch_clock_offset_ms`.
+
 ## CLI reference
 
 ```text
@@ -312,9 +411,11 @@ dropcatch init                         interactive setup (config.yaml + .env)
 dropcatch validate                     validate config, print warnings
 dropcatch providers [--offline]        capability matrix, credentials, connectivity
 dropcatch check <domain> [-p acct]     one-off check across sources
-dropcatch watch [-t id] [--dry-run]    run the watcher
+dropcatch watch [-t id] [--dry-run] [--metrics-port 9464]
 dropcatch buy <domain> -p acct --max-price N [--dry-run] [--yes]
-dropcatch test discord | test provider <acct> [-d domain]
+dropcatch test discord | test telegram [--chats] | test provider <acct> [-d domain]
+dropcatch import <file|-> [--dry-run] [--update] [--mode m] [--max-price n] [-r acct]
+dropcatch calendar [--days 30] [--ics file]
 dropcatch status [-t id] [-n 50]       states, attempts, runs, timeline, latency
 dropcatch resolve <target> [--as auto|succeeded|failed|reset]
 dropcatch dashboard [--host h] [--port p] [--public] [--watch]
@@ -363,7 +464,10 @@ Keep the host clock synced (NTP). `dropcatch check` warns when providers' clocks
 | Target `cannot be armed` | It is `SUCCEEDED`, `PENDING` or `AMBIGUOUS`. Inspect with `dropcatch status -t <id>`, then `dropcatch resolve <id>`. |
 | `window_expired` without a detection | The registry did not release in the window. Widen `postWindowSeconds` (`.pl` often needs an hour). |
 | RDAP says free, registrar says taken | Normal right after a drop, or the name is reserved. dropcatch waits for the registrar. |
-| Clock warning | Enable NTP (`timedatectl set-ntp true`). |
+| Clock warning | Enable NTP (`timedatectl set-ntp true`). dropcatch corrects offsets under 10 minutes meanwhile. |
+| OVH `CONFIGURATION_ERROR ... requires X` | The TLD asks for a configuration label. Set `options.ownerContact`, `acceptConditions: true`, or `extraConfiguration: { X: value }`. |
+| OVH order stays `REGISTRATION_PENDING` | Usually payment: save a default payment method, or pay the order in the OVH manager, then `dropcatch resolve <id>`. |
+| Telegram test fails with "chat not found" | Message the bot first, then use `test telegram --chats` for the right id (groups are negative). |
 | Forgot the dashboard password | Stop dropcatch, run `sqlite3 data/dropcatch.sqlite "DELETE FROM dashboard_auth; DELETE FROM dashboard_sessions;"`, restart and use the new setup link. |
 
 Set `--log-level debug` (or `trace` for every HTTP call, redacted) for detail.

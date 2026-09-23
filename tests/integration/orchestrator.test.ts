@@ -3,6 +3,9 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
+import type { Backoff } from "../../src/core/availability/AvailabilityService.ts";
+import { DropOrchestrator } from "../../src/core/orchestration/DropOrchestrator.ts";
+import type { AvailabilityStatus } from "../../src/core/types.ts";
 import { silentLogger } from "../../src/logging/logger.ts";
 import { DiscordChannel, EventPublisher, Notifier } from "../../src/notifications/Notifier.ts";
 import { mockStats, resetMockStats } from "../../src/providers/mock/MockProvider.ts";
@@ -198,5 +201,64 @@ describe("drop orchestration (plan step J simulations)", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("provider problem episodes", () => {
+  function episodeHarness() {
+    const h = harness(mockConfig({ accounts: { a: {} }, target: { availability: { providers: ["a"] } } }));
+    let t = Date.parse("2026-09-23T05:00:00Z");
+    const orchestrator = new DropOrchestrator({
+      target: h.target("t1"),
+      sources: [],
+      candidates: [],
+      store: h.store,
+      events: h.sink,
+      logger: silentLogger,
+      clock: { now: () => t, sleep: async () => {} },
+      dryRun: true,
+      timeZone: "UTC",
+    });
+    /** Feed one check result, then let `afterMs` pass. */
+    const check = (status: AvailabilityStatus, backoff?: Backoff, afterMs = 60_000): void => {
+      const at = new Date(t).toISOString();
+      const limited = status === "rate_limited";
+      orchestrator["onResult"]({
+        provider: "a", providerType: "mock", sourceKind: "registry", domain: "catch-me.com", status, startedAt: at, checkedAt: at, latencyMs: 20,
+        ...(limited ? { errorCode: "RATE_LIMITED", reason: "HTTP 429 without Retry-After" } : {}),
+      }, backoff);
+      t += afterMs;
+    };
+    return { h, check };
+  }
+
+  it("a 429 run that lets single checks through is one event, and recovery is announced once", () => {
+    const { h, check } = episodeHarness();
+    // The pattern seen on NASK: blocked, one check gets through, blocked again.
+    for (let level = 1; level <= 7; level++) check("rate_limited", { level, retryInMs: 60_000 });
+    check("unavailable", { level: 6, retryInMs: 60_000 });
+    check("rate_limited", { level: 7, retryInMs: 60_000 });
+    assert.deepEqual(h.sink.types(), ["rate_limited"]);
+    assert.equal(h.sink.events[0]!.data.retryInMs, 60_000);
+
+    for (let level = 6; level >= 1; level--) check("unavailable", { level, retryInMs: 60_000 });
+    assert.deepEqual(h.sink.types(), ["rate_limited"], "still easing back in");
+    check("unavailable");
+    const recovered = h.sink.events.at(-1)!;
+    assert.equal(recovered.type, "provider_recovered");
+    assert.equal(recovered.data.problem, "rate_limited");
+    assert.equal(recovered.data.failedChecks, 8);
+    check("unavailable");
+    assert.deepEqual(h.sink.types(), ["rate_limited", "provider_recovered"]);
+  });
+
+  it("a persistent error is reported once, and again only when the error changes", () => {
+    const { h, check } = episodeHarness();
+    for (let i = 0; i < 20; i++) check("error");
+    assert.deepEqual(h.sink.types(), ["provider_error"]);
+    check("rate_limited", { level: 1, retryInMs: 5000 });
+    assert.deepEqual(h.sink.types(), ["provider_error", "rate_limited"]);
+    for (let i = 0; i < 10; i++) check("unknown", { level: 1, retryInMs: 0 });
+    assert.deepEqual(h.sink.types(), ["provider_error", "rate_limited"], "unknown is not a real answer, so it cannot end the episode");
   });
 });

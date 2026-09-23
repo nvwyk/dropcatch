@@ -121,9 +121,22 @@ export function describeEvent(ev: DropEvent, timeZone = "UTC"): EventView {
       add("Detail", d.reason, false);
       return { title: "⚠️ Provider error", summary: `${String(d.provider)} error ${String(d.errorCode ?? "")}${d.reason ? `: ${String(d.reason)}` : ""}`, severity: "warning", fields };
 
-    case "rate_limited":
+    case "rate_limited": {
+      const retryIn = typeof d.retryInMs === "number" ? d.retryInMs : undefined;
+      add("Next check", retryIn !== undefined ? at(ev.at + retryIn) : undefined);
       add("Detail", d.reason, false);
-      return { title: "🐢 Rate limited", summary: `${String(d.provider)} rate limited; backing off`, severity: "warning", fields };
+      add("What happens now", "Checks back off (up to 5 min apart), then ease back to full speed once the provider answers again. You get one message when it has recovered, not one per rejected check.", false);
+      return {
+        title: "🐢 Rate limited",
+        summary: `${String(d.provider)} rate limited${d.reason ? ` (${String(d.reason)})` : ""}; backing off${retryIn !== undefined ? `, next check in ${formatDuration(retryIn)}` : ""}`,
+        severity: "warning",
+        fields,
+      };
+    }
+
+    case "provider_recovered":
+      add("Was", d.reason, false);
+      return { title: "✅ Provider recovered", summary: `${String(d.provider)} recovered: ${String(d.reason ?? "answering normally again")}`, severity: "success", fields };
 
     case "clock_jump":
       add("Detail", d.reason, false);

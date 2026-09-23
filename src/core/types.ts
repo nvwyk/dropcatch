@@ -13,6 +13,16 @@ export type AvailabilityStatus =
   | "rate_limited"
   | "error";
 
+/** Statuses in words, matching the dashboard. "unavailable" reads like an outage, but it means taken. */
+export const STATUS_TEXT: Record<AvailabilityStatus, string> = {
+  available: "available",
+  unavailable: "taken",
+  unknown: "unknown",
+  unsupported: "unsupported",
+  rate_limited: "rate limited",
+  error: "error",
+};
+
 /** registry = registry data (RDAP). registrar = a registrar's own availability check. */
 export type SourceKind = "registry" | "registrar";
 

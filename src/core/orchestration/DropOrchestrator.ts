@@ -3,7 +3,7 @@ import type { Logger } from "../../logging/logger.ts";
 import { observeCheck } from "../../observability/metrics.ts";
 import type { Store } from "../../persistence/Store.ts";
 import type { RateLimiter } from "../../providers/RateLimiter.ts";
-import { AvailabilityService, type AvailabilitySource } from "../availability/AvailabilityService.ts";
+import { AvailabilityService, type AvailabilitySource, type Backoff } from "../availability/AvailabilityService.ts";
 import type { Clock } from "../clock.ts";
 import type { EventSink, EventType } from "../events.ts";
 import { describeBlockingState } from "../registration/state.ts";
@@ -14,7 +14,7 @@ import {
   type RegistrationOutcome,
 } from "../registration/RegistrationService.ts";
 import { formatDuration, formatInstant } from "../time.ts";
-import type { AvailabilityResult } from "../types.ts";
+import { STATUS_TEXT, type AvailabilityResult } from "../types.ts";
 import { intervalFor, nextTickAt, phaseAt, shouldStop, type Phase } from "../watcher/schedule.ts";
 
 export type WatchOutcome =
@@ -47,7 +47,17 @@ export interface OrchestratorDeps {
   registrationTimings?: { verifyAttempts?: number; verifyIntervalMs?: number; pendingPollMs?: number; pendingIntervalMs?: number };
 }
 
-const PROBLEM_REPEAT_MS = 60_000;
+/** A failing provider counts as recovered once it has answered normally, with no back-off left, for this long. */
+const RECOVERED_AFTER_MS = 5 * 60_000;
+
+/** A stretch of errors or 429s from one provider: one event when it starts, one when it ends. */
+interface ProblemEpisode {
+  type: "rate_limited" | "provider_error";
+  code: string;
+  since: number;
+  failedChecks: number;
+  healthySince?: number;
+}
 
 /**
  * One orchestrator per target: arm, poll on the adaptive schedule, hand a positive
@@ -58,7 +68,7 @@ export class DropOrchestrator {
   private runId?: string;
   private phase?: Phase;
   private readonly lastStatus = new Map<string, string>();
-  private readonly lastProblem = new Map<string, { code: string; at: number }>();
+  private readonly problems = new Map<string, ProblemEpisode>();
   private readonly lastWarm = new Map<string, number>();
 
   constructor(deps: OrchestratorDeps) {
@@ -145,7 +155,7 @@ export class DropOrchestrator {
       timeoutMs: target.requestTimeoutMs,
       globalLimiter: this.d.globalLimiter,
       // Freshness and rate-limit pauses compare against provider timestamps, which use the system clock.
-      onResult: (r) => this.onResult(r),
+      onResult: (r, backoff) => this.onResult(r, backoff),
     });
 
     while (!signal.aborted) {
@@ -280,32 +290,52 @@ export class DropOrchestrator {
     }
   }
 
-  private onResult(r: AvailabilityResult): void {
+  private onResult(r: AvailabilityResult, backoff?: Backoff): void {
     const { store, logger } = this.d;
     observeCheck(r);
     store.recordCheck(this.runId, r, this.phase);
+    const now = this.d.clock.now();
     const previous = this.lastStatus.get(r.provider);
     this.lastStatus.set(r.provider, r.status);
-    const line = `${r.provider}: ${r.status}${r.price ? ` ${r.price.amount.toFixed(2)} ${r.price.currency}` : ""} (${r.latencyMs} ms)`;
-    if (previous !== r.status) logger.info(`Check ${line}`, { reason: r.reason, errorCode: r.errorCode });
-    else logger.debug(`Check ${line}`);
+    const answered = r.status === "available" || r.status === "unavailable";
+    // Only 429s and real answers move the back-off; an error or unknown in between says nothing about it.
+    const paced = r.status === "rate_limited" || answered ? backoff : undefined;
+    const pacing = paced
+      ? `; ${r.status === "rate_limited" ? "backing off" : "easing back in after a rate limit"}, next check in ${formatDuration(paced.retryInMs)}`
+      : "";
+    const line = `Check ${r.provider}: ${STATUS_TEXT[r.status]}${r.price ? ` ${r.price.amount.toFixed(2)} ${r.price.currency}` : ""} (${r.latencyMs} ms)${pacing}`;
+    const fields = { reason: r.reason, errorCode: r.errorCode };
 
+    const episode = this.problems.get(r.provider);
     if (r.status === "error" || r.status === "rate_limited") {
+      const type = r.status === "rate_limited" ? "rate_limited" : "provider_error";
       const code = r.errorCode ?? r.status;
-      const last = this.lastProblem.get(r.provider);
-      const now = this.d.clock.now();
-      if (!last || last.code !== code || now - last.at > PROBLEM_REPEAT_MS) {
-        this.lastProblem.set(r.provider, { code, at: now });
-        this.emit(r.status === "rate_limited" ? "rate_limited" : "provider_error", {
+      if (episode?.code === code) {
+        episode.failedChecks++;
+        episode.healthySince = undefined;
+      } else {
+        this.problems.set(r.provider, { type, code, since: episode?.since ?? now, failedChecks: (episode?.failedChecks ?? 0) + 1 });
+        // The event line already says what the check line would.
+        logger.debug(line, fields);
+        this.emit(type, { provider: r.provider, errorCode: code, reason: r.reason, latencyMs: r.latencyMs, retryInMs: paced?.retryInMs });
+        return;
+      }
+    } else if (episode && answered) {
+      episode.healthySince ??= now;
+      if (!paced && now - episode.healthySince >= RECOVERED_AFTER_MS) {
+        this.problems.delete(r.provider);
+        const was = episode.type === "rate_limited" ? "rate limited" : `failing (${episode.code})`;
+        this.emit("provider_recovered", {
           provider: r.provider,
-          errorCode: code,
-          reason: r.reason,
-          latencyMs: r.latencyMs,
+          problem: episode.type,
+          durationMs: episode.healthySince - episode.since,
+          failedChecks: episode.failedChecks,
+          reason: `${was} for ${formatDuration(episode.healthySince - episode.since)}, ${episode.failedChecks} check(s) affected`,
         });
       }
-    } else if (this.lastProblem.has(r.provider)) {
-      this.lastProblem.delete(r.provider);
-      logger.info(`${r.provider} recovered`);
     }
+    // Back-off steps are seconds to minutes apart, so each is worth a line; plain repeats are not.
+    if (previous !== r.status || paced) logger.info(line, fields);
+    else logger.debug(line, fields);
   }
 }

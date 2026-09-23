@@ -70,7 +70,7 @@ export function availabilityFromHttpStatus(
   if (res.status === 429) {
     return availability(meta, sourceKind, "rate_limited", {
       errorCode: "RATE_LIMITED",
-      reason: "provider rate limit",
+      reason: retryAfter !== undefined ? `HTTP 429, Retry-After ${Math.ceil(retryAfter / 1000)} s` : "HTTP 429 without Retry-After",
       retryAfterMs: retryAfter,
     }, res.finishedAt);
   }

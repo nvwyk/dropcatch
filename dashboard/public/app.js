@@ -651,7 +651,7 @@ function feed(events, { withTarget = true } = {}) {
   if (!events.length) return empty("No activity yet", "Events appear here as soon as a watch starts.");
   return h("ol", { class: "feed" }, [...events].reverse().map((e) => {
     const p = e.payload || {};
-    const sev = /succeeded/.test(e.type) ? "success" : /failed|ambiguous|blocked|budget/.test(e.type) ? "danger" : /detected|dry_run/.test(e.type) ? "signal" : /error|rate|pending|declined|false_positive|clock/.test(e.type) ? "warning" : "";
+    const sev = /succeeded|recovered/.test(e.type) ? "success" : /failed|ambiguous|blocked|budget/.test(e.type) ? "danger" : /detected|dry_run/.test(e.type) ? "signal" : /error|rate|pending|declined|false_positive|clock/.test(e.type) ? "warning" : "";
     const detail = [p.provider, p.outcome, p.errorCode, p.reason].filter(Boolean).join(", ");
     return h("li", { class: `sev-${sev}` },
       h("time", { datetime: e.timestamp, title: fmtIso(e.timestamp, { date: true, zone: true }), text: fmtIso(e.timestamp) }),
@@ -1200,8 +1200,8 @@ async function removeSecret(name) {
 
 // ---------------------------------------------------------------- notifications
 
-const EVENT_TYPES = ["watch_started", "drop_window_entered", "hot_window_entered", "availability_detected", "availability_false_positive", "purchase_blocked", "budget_exceeded", "confirmation_requested", "confirmation_declined", "registration_started", "registration_succeeded", "registration_failed", "registration_pending", "registration_ambiguous", "dry_run_registration", "provider_error", "rate_limited", "clock_jump", "watch_finished"];
-const DEFAULT_EVENTS = ["watch_started", "drop_window_entered", "availability_detected", "purchase_blocked", "budget_exceeded", "confirmation_requested", "registration_started", "registration_succeeded", "registration_failed", "registration_pending", "registration_ambiguous", "dry_run_registration", "provider_error", "rate_limited", "watch_finished"];
+const EVENT_TYPES = ["watch_started", "drop_window_entered", "hot_window_entered", "availability_detected", "availability_false_positive", "purchase_blocked", "budget_exceeded", "confirmation_requested", "confirmation_declined", "registration_started", "registration_succeeded", "registration_failed", "registration_pending", "registration_ambiguous", "dry_run_registration", "provider_error", "rate_limited", "provider_recovered", "clock_jump", "watch_finished"];
+const DEFAULT_EVENTS = ["watch_started", "drop_window_entered", "availability_detected", "purchase_blocked", "budget_exceeded", "confirmation_requested", "registration_started", "registration_succeeded", "registration_failed", "registration_pending", "registration_ambiguous", "dry_run_registration", "provider_error", "rate_limited", "provider_recovered", "watch_finished"];
 
 async function pageNotifications() {
   if (!S.meta) await loadMeta();

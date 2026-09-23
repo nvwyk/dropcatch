@@ -4,7 +4,7 @@ import type { QuorumMode } from "../../config/schema.ts";
 import { aggregate, type AggregateResult } from "../../core/availability/AvailabilityAggregator.ts";
 import { measureClockOffset, type NtpSample } from "../../core/ntp.ts";
 import type { AvailabilityResult } from "../../core/types.ts";
-import { formatMoney } from "../../core/types.ts";
+import { formatMoney, STATUS_TEXT } from "../../core/types.ts";
 import { displayDomain, normalizeDomain } from "../../domain/normalize.ts";
 import { strategyFor } from "../../tld/strategies.ts";
 import { bad, bold, dim, good, kv, out, printJson, warn } from "../output.ts";
@@ -71,9 +71,9 @@ function statusText(r: AvailabilityResult): string {
     case "available":
       return r.sourceKind === "registry" ? good("not found in registry (possible availability)") : good("available");
     case "unavailable":
-      return bad("unavailable");
+      return bad(STATUS_TEXT.unavailable);
     default:
-      return warn(r.status);
+      return warn(STATUS_TEXT[r.status]);
   }
 }
 

@@ -261,12 +261,12 @@ notifications:
 ```
 
 Then `dropcatch test telegram`. Both channels are delivered by the same background queue.
-Discord 429 and 5xx responses are retried, repeated provider errors are collapsed for 5 minutes, and a
+Discord 429 and 5xx responses are retried, a failing provider is reported once (plus once when it recovers), and a
 failing channel never slows down a purchase. Per target, `notifications.discord.enabled` and
 `notifications.telegram.enabled` switch channels off.
 
 For Discord alone: Events are delivered by a background queue.
-Discord 429 and 5xx responses are retried, repeated provider errors are collapsed for 5 minutes, and a
+Discord 429 and 5xx responses are retried, a failing provider is reported once (plus once when it recovers), and a
 failing webhook never slows down a purchase. `notifications.discord.events` limits what is sent, and
 `mentionRoleId` pings one role on detections and purchases.
 
@@ -340,8 +340,9 @@ accounts:
       availability: { minIntervalMs: 1000, maxConcurrentRequests: 1, requestsPerMinute: 60 }
 ```
 
-A 429 pauses that source for its `Retry-After`. `policy.maxConcurrentRequests` caps simultaneous checks
-across all targets.
+A 429 pauses that source for its `Retry-After`, or backs it off exponentially (5 s doubling up to 5 min)
+when there is none. Once it answers again it eases back in one step per answer instead of jumping straight
+back to full speed. `policy.maxConcurrentRequests` caps simultaneous checks across all targets.
 
 Proxies (HTTP, HTTPS, SOCKS5) are for routing, for example a whitelisted egress IP for Namecheap. They
 are **not** a way around provider limits: an account keeps one limiter however many proxies it uses.

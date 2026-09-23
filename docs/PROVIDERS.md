@@ -91,6 +91,7 @@ Sources: <https://developers.cloudflare.com/registrar/registrar-api/>, <https://
 - IANA bootstrap: <https://data.iana.org/rdap/dns.json> (fetched lazily, cached in memory).
 - NASK `.pl`: <https://www.dns.pl/en/RDAP_in_NASK>. Endpoint `https://rdap.dns.pl/domain/{domain}`. `200` = object exists, `404` = valid query for a non-existing object, `400` = invalid query.
 - **Observed 2026-09-23:** after several minutes of polling `rdap.dns.pl` at about 1 request per second, NASK answered `429` with no `Retry-After` header and kept blocking the IP. dropcatch now defaults RDAP to 1 request per 2 s and at most 20 per minute, and backs off exponentially (5 s up to 5 min) on repeated 429s.
+- **Observed 2026-09-23, continued:** once blocked, NASK let a single request through roughly every 15 minutes and answered `429` again to a request 5 s later. Back-off therefore steps down one level per successful answer (5 min, 2 min 40 s, 1 min 20 s ...) instead of resetting. Watching a `.pl` name around the clock without a drop time polls every `fixedIntervalMs` (5 s by default), which is enough to get blocked; set `drop.expectedAt` or raise `fixedIntervalMs`.
 - **NASK states that RDAP data lags the registry by up to 15 minutes.** An RDAP 404 on `.pl` is therefore an early hint, never proof of registrability, and it can arrive long after a registrar already sees the domain as free.
 - RDAP is registry data access, not a purchase API. dropcatch never buys on an RDAP signal alone: every registration is preceded by a final check at the registrar that will perform it.
 

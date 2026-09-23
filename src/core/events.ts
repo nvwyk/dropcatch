@@ -18,6 +18,7 @@ export const EVENT_TYPES = [
   "dry_run_registration",
   "provider_error",
   "rate_limited",
+  "provider_recovered",
   "clock_jump",
   "watch_finished",
 ] as const;
@@ -40,6 +41,7 @@ export const DEFAULT_NOTIFY_EVENTS: readonly EventType[] = [
   "dry_run_registration",
   "provider_error",
   "rate_limited",
+  "provider_recovered",
   "watch_finished",
 ];
 

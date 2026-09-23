@@ -20,15 +20,31 @@ export interface TickResult {
   skipped: string[];
 }
 
+/** A source's rate-limit back-off right after a result was processed. */
+export interface Backoff {
+  /** +1 per 429, -1 per normal answer; 0 means the source is back to the configured pace. */
+  level: number;
+  /** Time until this source may be checked again. */
+  retryInMs: number;
+}
+
 export interface AvailabilityServiceOptions {
   mode: QuorumMode;
   minimumConfirmations: number;
   timeoutMs: number;
   /** Shared across all targets: caps simultaneous availability requests. */
   globalLimiter?: RateLimiter;
-  onResult?: (result: AvailabilityResult) => void;
+  /** `backoff` is set while the source is backing off from, or easing back in after, a 429. */
+  onResult?: (result: AvailabilityResult, backoff?: Backoff) => void;
   now?: () => number;
 }
+
+const BACKOFF_BASE_MS = 5000;
+const BACKOFF_MAX_MS = 300_000;
+/** 5 s doubled six times already exceeds the 5 minute cap, so further strikes change nothing. */
+const MAX_STRIKES = 7;
+
+const backoffMs = (level: number): number => Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (level - 1));
 
 /**
  * Runs one round of availability checks across all sources concurrently, honouring each
@@ -41,7 +57,11 @@ export class AvailabilityService {
   private readonly latest = new Map<string, AvailabilityResult>();
   /** Sources whose "available" was contradicted by a registrar; ignored until their status changes. */
   private readonly suppressed = new Set<string>();
-  /** Consecutive 429s per source, for exponential back-off when no Retry-After is given. */
+  /**
+   * Back-off level per source, for exponential back-off when no Retry-After is given. A normal
+   * answer steps it down by one instead of clearing it: a server that lets one request through
+   * after a block (NASK RDAP does) will block again if the full polling rate resumes at once.
+   */
   private readonly strikes = new Map<string, number>();
   private readonly now: () => number;
 
@@ -112,16 +132,22 @@ export class AvailabilityService {
             roundResults.push(result);
             if (result.status !== "available") this.suppressed.delete(source.id);
             if (result.status === "rate_limited") {
-              const strike = (this.strikes.get(source.id) ?? 0) + 1;
+              const strike = Math.min(MAX_STRIKES, (this.strikes.get(source.id) ?? 0) + 1);
               this.strikes.set(source.id, strike);
               // Some servers (e.g. NASK RDAP) send 429 without Retry-After and keep blocking while
               // polled, so back off exponentially: 5 s, 10 s, 20 s ... capped at 5 minutes.
-              const backoff = Math.min(300_000, 5000 * 2 ** (strike - 1));
-              source.limiter.pauseUntil(this.now() + Math.max(result.retryAfterMs ?? 0, backoff));
-            } else if (result.status === "available" || result.status === "unavailable") {
-              this.strikes.delete(source.id);
+              source.limiter.pauseUntil(this.now() + Math.max(result.retryAfterMs ?? 0, backoffMs(strike)));
+            } else if ((result.status === "available" || result.status === "unavailable") && this.strikes.has(source.id)) {
+              const strike = this.strikes.get(source.id)! - 1;
+              if (strike > 0) {
+                this.strikes.set(source.id, strike);
+                source.limiter.pauseUntil(this.now() + backoffMs(strike));
+              } else {
+                this.strikes.delete(source.id);
+              }
             }
-            this.opts.onResult?.(result);
+            const level = this.strikes.get(source.id);
+            this.opts.onResult?.(result, level ? { level, retryInMs: Math.max(0, source.limiter.nextAvailableAt() - this.now()) } : undefined);
           })
           .finally(() => {
             release();

@@ -153,8 +153,10 @@ connect means the request may have been processed, so it is `unknown`.
 
 Events go to SQLite synchronously and to an in-memory queue that a single worker drains to Discord.
 The purchase path never awaits Discord. Discord 429 honours `retry_after`, 5xx and network errors back
-off and retry three times, and repeated `provider_error` / `rate_limited` events are de-duplicated for
-5 minutes per provider and code. On shutdown the queue gets a bounded drain window.
+off and retry three times. Provider trouble is reported per episode: one `provider_error` or
+`rate_limited` event when a provider starts failing (or fails with a different code), and one
+`provider_recovered` once it has answered normally, with no back-off left, for 5 minutes. On shutdown
+the queue gets a bounded drain window.
 
 ## Security
 
